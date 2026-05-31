@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mini CRM — Agentes &amp; IA Generativa</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- textura de grade sutil ao fundo -->
+  <div class="bg-texture" aria-hidden="true"></div>
+
+  <!-- ===== TELA DE LOGIN (overlay) ===== -->
+  <div id="login" class="login-tela escondido">
+    <form id="login-form" class="login-card">
+      <span class="marca-pill">IMERSÃO</span>
+      <h1 class="login-titulo">Mini <em>CRM</em></h1>
+      <p class="sub">Entre para acessar seus clientes.</p>
+      <div class="campo"><label>E-mail</label><input id="login-email" type="email" autocomplete="username" required /></div>
+      <div class="campo"><label>Senha</label><input id="login-senha" type="password" autocomplete="current-password" required /></div>
+      <div id="login-erro" class="login-erro escondido"></div>
+      <button type="submit" class="btn primario login-btn">Entrar</button>
+    </form>
+  </div>
+
+  <!-- ===== APP ===== -->
+  <div id="app" class="escondido">
+  <header class="topo">
+    <div class="marca">
+      <span class="marca-pill">IMERSÃO</span>
+      <span class="marca-nome">Mini <em>CRM</em></span>
+    </div>
+    <nav class="abas">
+      <button class="aba ativa" data-tela="hoje">Hoje</button>
+      <button class="aba" data-tela="funil">Funil</button>
+      <button class="aba" data-tela="clientes">Clientes</button>
+    </nav>
+    <div class="topo-direita">
+      <button id="btnNovo" class="btn primario">+ Novo cliente</button>
+      <div class="usuario-menu">
+        <button id="btnUsuario" class="btn usuario-btn"><span id="usuario-nome">—</span> ▾</button>
+        <div id="usuario-dropdown" class="dropdown escondido">
+          <button id="btnIntegracoes" class="dropdown-item">Integrações (API)</button>
+          <button id="btnSair" class="dropdown-item">Sair</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- TELA HOJE -->
+    <section id="tela-hoje" class="tela ativa">
+      <div class="cabecalho-tela">
+        <span class="eyebrow">Seu dia</span>
+        <h1 class="display-tela">O que pede <em>atenção</em> hoje</h1>
+        <p class="sub">Para nenhum follow-up cair no esquecimento.</p>
+      </div>
+
+      <div class="resumo" id="resumo-hoje"></div>
+
+      <div class="bloco">
+        <h2 class="bloco-titulo atrasado"><span class="ponto"></span> Atrasados</h2>
+        <div id="lista-atrasados" class="lista"></div>
+      </div>
+      <div class="bloco">
+        <h2 class="bloco-titulo hoje"><span class="ponto"></span> Para fazer hoje</h2>
+        <div id="lista-hoje" class="lista"></div>
+      </div>
+      <div class="bloco">
+        <h2 class="bloco-titulo"><span class="ponto"></span> Próximos</h2>
+        <div id="lista-futuros" class="lista"></div>
+      </div>
+    </section>
+
+    <!-- TELA FUNIL -->
+    <section id="tela-funil" class="tela">
+      <div class="cabecalho-tela">
+        <span class="eyebrow">Pipeline</span>
+        <h1 class="display-tela">Funil de <em>vendas</em></h1>
+        <p class="sub">Arraste os cartões entre as colunas conforme o cliente avança.</p>
+      </div>
+      <div id="kanban" class="kanban"></div>
+    </section>
+
+    <!-- TELA CLIENTES -->
+    <section id="tela-clientes" class="tela">
+      <div class="cabecalho-tela">
+        <span class="eyebrow">Base</span>
+        <h1 class="display-tela">Seus <em>clientes</em></h1>
+        <p class="sub">Clique em qualquer um para abrir a ficha completa.</p>
+      </div>
+      <input id="busca" class="busca" placeholder="Buscar por nome ou empresa..." />
+      <div id="tabela-clientes" class="lista"></div>
+    </section>
+  </main>
+  </div><!-- /#app -->
+
+  <!-- MODAL FICHA / FORMULARIO -->
+  <div id="modal" class="modal escondido">
+    <div class="modal-conteudo">
+      <button class="fechar" id="fecharModal" aria-label="Fechar">×</button>
+      <div id="modal-corpo"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast escondido"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
