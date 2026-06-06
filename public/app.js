@@ -415,7 +415,9 @@ async function abrirIntegracoes() {
   abrirModal(`
     <span class="eyebrow">Para automações &amp; IA</span>
     <h1>Chaves de <em>API</em></h1>
-    <p class="sub">Crie uma chave por integração. Elas dão acesso de máquina à API — nunca use a sua senha para isso.</p>
+    <p class="sub">Crie uma chave por integração. Elas dão acesso de máquina à API <b>e ao servidor MCP</b>
+      (<code>/mcp</code>, usado por agentes de IA remotos) — nunca use a sua senha para isso.
+      A chave é mostrada uma única vez e pode ser revogada a qualquer momento.</p>
     <div class="campo" style="margin-top:16px">
       <label>Nova integração</label>
       <div style="display:flex; gap:10px">

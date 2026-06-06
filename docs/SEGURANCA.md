@@ -139,3 +139,46 @@ errada → 401; login correto → cookie+CSRF; escrita sem CSRF → 403; escrita
 
 **Pendências recomendadas (próximos passos):** TLS no deploy; remover handlers `onclick` inline
 para endurecer a CSP (tirar `'unsafe-inline'` de script); política formal de retenção LGPD.
+
+---
+
+## Acesso MCP (servidor de agentes) — revisão de segurança 06/06/2026
+
+> Escopo: `POST /mcp`, `mcp/server.mjs`, `mcp/tools.mjs`, `crm-service.js`, middleware `requireBearer`
+> em `auth.js`. Revisão exigida pela constituição (Princípios II e IV) antes de tocar dados reais —
+> reforçada porque o MCP expõe operações **destrutivas** (excluir/exportar) a agentes remotos.
+
+### Princípio II — Segurança e Privacidade por padrão
+
+| Verificação | Resultado |
+|---|---|
+| Toda requisição ao `/mcp` exige Bearer válido; sem modo anônimo | ✅ `requireBearer` → `401` sem/ inválida/ revogada (testado) |
+| Rate limiting no `/mcp` (anti força bruta de chave) | ✅ `mcpLimiter` 600/15min por IP (`trust proxy`) |
+| Cabeçalhos de segurança | ✅ `helmet` global cobre `/mcp` |
+| Transporte criptografado em produção | ✅ TLS na borda (Traefik HTTP→HTTPS + HSTS); processo/porta inalterados |
+| Validação de entrada, sem escrita parcial | ✅ schema (zod) + regras de domínio (enums, `nome`, texto ≤5000); payload ≤64 KB (testado) |
+| Sem SQL injection | ✅ 100% prepared statements em `crm-service.js`; sem SQL por concatenação |
+| Segredo da chave | ✅ guardado só como `sha256`; mostrado uma vez; comparações em tempo constante (inalterado) |
+| Credencial de máquina fora do navegador | ✅ MCP usa Bearer; nada sensível no `localStorage` |
+
+### Princípio IV — Auditoria confiável e autenticada
+
+| Verificação | Resultado |
+|---|---|
+| Autoria derivada da credencial, não da entrada | ✅ `created_by="ia"` mesmo enviando `"humano"` no corpo (testado); schema descarta o campo e o serviço força o autor |
+| Registro de quem e quando | ✅ `created_by`/`gerado_por_ia` + `ultimo_uso` da chave atualizado a cada chamada |
+| Revogação isolada e imediata | ✅ revogar uma chave → `401` na seguinte; outras chaves intactas (testado) |
+
+### Observações e decisões
+
+- **CSRF não se aplica ao MCP**: a proteção CSRF é do plano de sessão (cookie). Chaves Bearer não
+  carregam cookie ambiente → corretamente fora do CSRF, igual à API REST por chave.
+- **Operações destrutivas (excluir/exportar)** ficam expostas por decisão de produto (FR-013): são
+  autenticadas, auditadas, sob rate limit e marcadas com `destructiveHint`. **Contenção:** revogação
+  imediata da credencial.
+- **Isolamento entre credenciais**: o servidor MCP é stateless — cada requisição cria um `McpServer`
+  próprio ligado ao principal daquela chamada; não há estado mutável compartilhado entre credenciais.
+- **zod descarta campos desconhecidos** por padrão → reforço extra contra falsificação de autoria.
+
+**Conclusão:** sem achados críticos. O acesso MCP está alinhado aos Princípios II e IV e pronto para
+produção atrás do Traefik (TLS). Pendência herdada: política formal de retenção LGPD (igual à API).

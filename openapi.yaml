@@ -1,0 +1,534 @@
+openapi: 3.0.3
+info:
+  title: Mini CRM — API
+  version: "1.0.0"
+  description: |
+    API do Mini CRM (consultoria / mentorias / IA).
+
+    ## Autenticação (dois planos)
+    - **API key (máquina/IA)** — envie `Authorization: Bearer <API_KEY>`. Escritas ficam
+      registradas como `created_by = "ia"`. É o caminho recomendado para automações.
+      Use o botão **Authorize** aqui no topo para testar com sua key.
+    - **Sessão (navegador)** — `POST /api/auth/login` cria um cookie `crm_sessao` (httpOnly) e
+      devolve um token **CSRF** que deve ir no header `X-CSRF-Token` em toda escrita. Escritas
+      ficam como `created_by = "humano"`.
+
+    As rotas de **API Keys** (`/api/keys`) exigem **admin via sessão** — uma Bearer key recebe `403`.
+
+    ## Servidor MCP
+
+    Além desta API REST, o CRM expõe um **servidor MCP** autenticado em `POST /mcp` (transporte
+    Streamable HTTP) para agentes de IA, usando a **mesma chave Bearer**. REST e MCP compartilham a
+    lógica de negócio em `crm-service.js` (comportamento idêntico). Veja `docs/MCP.md`.
+servers:
+  - url: https://mentoria.crm.better-knowledge.com
+    description: Produção
+
+tags:
+  - name: Autenticação
+  - name: Leads
+    description: Clientes / negócios (a entidade "lead" deste CRM)
+  - name: Interações
+  - name: Agenda
+  - name: API Keys
+    description: Somente admin via sessão
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [Autenticação]
+      summary: Login (cria sessão)
+      description: Define o cookie `crm_sessao` e devolve o token CSRF para as escritas via navegador.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '401':
+          $ref: '#/components/responses/Erro401'
+
+  /api/auth/logout:
+    post:
+      tags: [Autenticação]
+      summary: Logout (destrói a sessão)
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '401': { $ref: '#/components/responses/Erro401' }
+
+  /api/auth/me:
+    get:
+      tags: [Autenticação]
+      summary: Sessão atual
+      description: Requer cookie de sessão (não funciona com Bearer key).
+      responses:
+        '200':
+          description: Dados da sessão
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '401': { $ref: '#/components/responses/Erro401' }
+
+  /api/clientes:
+    get:
+      tags: [Leads]
+      summary: Listar leads
+      description: Retorna todos os leads, mais recentes primeiro, com a contagem de interações.
+      responses:
+        '200':
+          description: Lista de leads
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Lead' }
+        '401': { $ref: '#/components/responses/Erro401' }
+    post:
+      tags: [Leads]
+      summary: Cadastrar lead novo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NovoLead' }
+      responses:
+        '201':
+          description: Lead criado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lead' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Csrf' }
+
+  /api/clientes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdLead'
+    get:
+      tags: [Leads]
+      summary: Detalhe do lead (com interações)
+      responses:
+        '200':
+          description: Lead com histórico de interações
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Lead'
+                  - type: object
+                    properties:
+                      interacoes:
+                        type: array
+                        items: { $ref: '#/components/schemas/Interacao' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '404': { $ref: '#/components/responses/Erro404' }
+    put:
+      tags: [Leads]
+      summary: Atualizar lead
+      description: Campos omitidos mantêm o valor atual.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AtualizaLead' }
+      responses:
+        '200':
+          description: Lead atualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lead' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Csrf' }
+        '404': { $ref: '#/components/responses/Erro404' }
+    delete:
+      tags: [Leads]
+      summary: Excluir lead (LGPD)
+      description: Remove o lead e suas interações (cascade).
+      responses:
+        '200':
+          description: Removido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  removido: { type: integer, example: 29 }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Csrf' }
+        '404': { $ref: '#/components/responses/Erro404' }
+
+  /api/clientes/{id}/etapa:
+    parameters:
+      - $ref: '#/components/parameters/IdLead'
+    put:
+      tags: [Leads]
+      summary: Mover etapa / definir resultado
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MudaEtapa' }
+      responses:
+        '200':
+          description: Lead atualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lead' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Csrf' }
+        '404': { $ref: '#/components/responses/Erro404' }
+
+  /api/clientes/{id}/export:
+    parameters:
+      - $ref: '#/components/parameters/IdLead'
+    get:
+      tags: [Leads]
+      summary: Exportar lead (LGPD)
+      description: Devolve o lead com as interações como anexo JSON (`Content-Disposition`).
+      responses:
+        '200':
+          description: JSON do lead + interações
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Lead'
+                  - type: object
+                    properties:
+                      interacoes:
+                        type: array
+                        items: { $ref: '#/components/schemas/Interacao' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '404': { $ref: '#/components/responses/Erro404' }
+
+  /api/clientes/{id}/interacoes:
+    parameters:
+      - $ref: '#/components/parameters/IdLead'
+    get:
+      tags: [Interações]
+      summary: Listar interações do lead
+      responses:
+        '200':
+          description: Lista de interações (mais recentes primeiro)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Interacao' }
+        '401': { $ref: '#/components/responses/Erro401' }
+    post:
+      tags: [Interações]
+      summary: Registrar interação
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NovaInteracao' }
+      responses:
+        '201':
+          description: Interação criada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Interacao' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Csrf' }
+        '404': { $ref: '#/components/responses/Erro404' }
+
+  /api/hoje:
+    get:
+      tags: [Agenda]
+      summary: Agenda "Hoje" (follow-ups)
+      description: Leads em aberto com `proxima_acao_data`, agrupados em atrasados / hoje / futuros.
+      responses:
+        '200':
+          description: Follow-ups agrupados
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HojeResponse' }
+        '401': { $ref: '#/components/responses/Erro401' }
+
+  /api/keys:
+    get:
+      tags: [API Keys]
+      summary: Listar API keys
+      description: Somente admin via sessão.
+      responses:
+        '200':
+          description: Lista de keys (sem o segredo)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ApiKey' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Admin' }
+    post:
+      tags: [API Keys]
+      summary: Criar API key
+      description: Somente admin via sessão. A chave (`chave`) é mostrada **uma única vez**.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NovaApiKeyRequest' }
+      responses:
+        '201':
+          description: Key criada (inclui o segredo)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyCriada' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '403': { $ref: '#/components/responses/Erro403Admin' }
+
+  /api/keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    delete:
+      tags: [API Keys]
+      summary: Revogar API key
+      description: Somente admin via sessão. Desativa a key (`ativa = 0`).
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '403': { $ref: '#/components/responses/Erro403Admin' }
+        '404': { $ref: '#/components/responses/Erro404' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "API key da integração (formato: crm_xxxxxxxx...). Gerada por um admin."
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: crm_sessao
+      description: Cookie de sessão criado no login (uso pelo navegador; escritas exigem header X-CSRF-Token).
+
+  parameters:
+    IdLead:
+      name: id
+      in: path
+      required: true
+      description: ID do lead
+      schema: { type: integer }
+
+  responses:
+    Ok:
+      description: Sucesso
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok: { type: boolean, example: true }
+    Erro400:
+      description: Requisição inválida
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    Erro401:
+      description: Não autenticado / credencial inválida
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    Erro403Csrf:
+      description: Token CSRF inválido (apenas no fluxo por sessão)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    Erro403Admin:
+      description: Apenas administradores (via sessão)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    Erro404:
+      description: Não encontrado
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+
+  schemas:
+    Erro:
+      type: object
+      properties:
+        erro: { type: string, example: "Cliente nao encontrado" }
+
+    LoginRequest:
+      type: object
+      required: [email, senha]
+      properties:
+        email: { type: string, format: email, example: "admin@crm.local" }
+        senha: { type: string, format: password, example: "********" }
+
+    Usuario:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        nome: { type: string, example: "Administrador" }
+        email: { type: string, example: "admin@crm.local" }
+        papel: { type: string, enum: [admin, assistente], example: admin }
+
+    LoginResponse:
+      type: object
+      properties:
+        usuario: { $ref: '#/components/schemas/Usuario' }
+        csrf: { type: string, description: Enviar em X-CSRF-Token nas escritas via sessão }
+
+    NovoLead:
+      type: object
+      required: [nome]
+      description: |
+        Corpo para cadastrar um lead. Só `nome` é obrigatório.
+        Notas: `etapa`/`resultado` fora da lista caem no default silenciosamente;
+        `tipo_cliente` NÃO é validado (qualquer string é gravada);
+        `proxima_acao_data` deve ser `YYYY-MM-DD`; `created_by` é derivado da credencial (ignorado se enviado).
+      properties:
+        nome: { type: string, example: "Maria Silva" }
+        empresa: { type: string, nullable: true, example: "Acme Consultoria" }
+        cargo: { type: string, nullable: true, example: "Diretora de Operações" }
+        telefone: { type: string, nullable: true, example: "+5511999998888" }
+        email: { type: string, nullable: true, example: "maria@acme.com.br" }
+        tipo_cliente:
+          type: string
+          default: b2b
+          enum: [b2b, autonomo, publico]
+          description: Convenção (não validado pelo servidor).
+        origem: { type: string, nullable: true, example: "Instagram" }
+        etapa:
+          type: string
+          default: novo
+          enum: [novo, qualificacao, reuniao, proposta]
+        resultado:
+          type: string
+          default: em_aberto
+          enum: [em_aberto, ganho, perdido]
+        valor_estimado: { type: number, default: 0, example: 12000 }
+        proposta_enviada: { type: boolean, default: false }
+        status_pagamento: { type: string, nullable: true, example: "aguardando" }
+        proxima_acao: { type: string, nullable: true, example: "Enviar proposta de mentoria" }
+        proxima_acao_data:
+          type: string
+          format: date
+          nullable: true
+          example: "2026-06-10"
+          description: Formato YYYY-MM-DD (a tela "Hoje" compara como texto).
+
+    AtualizaLead:
+      allOf:
+        - $ref: '#/components/schemas/NovoLead'
+      description: Igual ao NovoLead, mas nenhum campo é obrigatório (parcial).
+
+    MudaEtapa:
+      type: object
+      description: Envie etapa, resultado, ou ambos.
+      properties:
+        etapa: { type: string, enum: [novo, qualificacao, reuniao, proposta] }
+        resultado: { type: string, enum: [em_aberto, ganho, perdido] }
+
+    Lead:
+      type: object
+      properties:
+        id: { type: integer, readOnly: true, example: 29 }
+        nome: { type: string, example: "Maria Silva" }
+        empresa: { type: string, nullable: true }
+        cargo: { type: string, nullable: true }
+        telefone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        tipo_cliente: { type: string, example: b2b }
+        origem: { type: string, nullable: true }
+        etapa: { type: string, enum: [novo, qualificacao, reuniao, proposta] }
+        resultado: { type: string, enum: [em_aberto, ganho, perdido] }
+        valor_estimado: { type: number, example: 12000 }
+        proposta_enviada: { type: integer, enum: [0, 1], description: "0 = não, 1 = sim" }
+        status_pagamento: { type: string, nullable: true }
+        proxima_acao: { type: string, nullable: true }
+        proxima_acao_data: { type: string, nullable: true, example: "2026-06-10" }
+        created_by: { type: string, enum: [humano, ia], readOnly: true }
+        created_at: { type: string, readOnly: true, example: "2026-06-06 14:30:00" }
+        updated_at: { type: string, readOnly: true, example: "2026-06-06 14:30:00" }
+        total_interacoes:
+          type: integer
+          readOnly: true
+          description: Presente apenas na listagem (GET /api/clientes).
+
+    Interacao:
+      type: object
+      properties:
+        id: { type: integer, example: 10 }
+        cliente_id: { type: integer, example: 29 }
+        texto: { type: string, example: "Cliente pediu proposta por e-mail." }
+        gerado_por_ia: { type: integer, enum: [0, 1], description: "1 quando criada via API key" }
+        data: { type: string, example: "2026-06-06 14:35:00" }
+        created_at: { type: string, example: "2026-06-06 14:35:00" }
+
+    NovaInteracao:
+      type: object
+      required: [texto]
+      properties:
+        texto: { type: string, maxLength: 5000, example: "Cliente pediu proposta por e-mail." }
+
+    HojeResponse:
+      type: object
+      properties:
+        atrasados:
+          type: array
+          items: { $ref: '#/components/schemas/LeadResumo' }
+        hoje:
+          type: array
+          items: { $ref: '#/components/schemas/LeadResumo' }
+        futuros:
+          type: array
+          items: { $ref: '#/components/schemas/LeadResumo' }
+
+    LeadResumo:
+      type: object
+      properties:
+        id: { type: integer }
+        nome: { type: string }
+        empresa: { type: string, nullable: true }
+        etapa: { type: string }
+        valor_estimado: { type: number }
+        proxima_acao: { type: string, nullable: true }
+        proxima_acao_data: { type: string, nullable: true }
+
+    ApiKey:
+      type: object
+      properties:
+        id: { type: integer }
+        nome: { type: string }
+        prefixo: { type: string, example: "crm_cfee0db1" }
+        ativa: { type: integer, enum: [0, 1] }
+        ultimo_uso: { type: string, nullable: true }
+        created_at: { type: string }
+
+    NovaApiKeyRequest:
+      type: object
+      required: [nome]
+      properties:
+        nome: { type: string, example: "Integração n8n" }
+
+    ApiKeyCriada:
+      type: object
+      properties:
+        id: { type: integer }
+        nome: { type: string }
+        prefixo: { type: string }
+        chave:
+          type: string
+          description: Segredo completo — mostrado UMA única vez.
+          example: "crm_cfee0db15f4292824106b073409bdac6"
