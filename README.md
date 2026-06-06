@@ -72,6 +72,29 @@ curl -X POST http://localhost:3000/api/clientes `
 Registros criados por chave de API são marcados como **gerados por IA** (auditoria confiável,
 derivada da credencial — não de um header).
 
+> A lógica de negócio (validação, whitelist, auditoria) vive em [`crm-service.js`](crm-service.js),
+> compartilhada pela API REST **e** pelo servidor MCP, para que os dois caminhos se comportem igual.
+
+## Servidor MCP (agentes de IA remotos)
+
+Além da API REST, o CRM expõe um **servidor MCP** (Model Context Protocol) em `POST /mcp`
+(transporte *Streamable HTTP*) para que agentes de IA operem o CRM remotamente. **Tudo é
+autenticado**: a mesma **chave de API** (header `Authorization: Bearer`) emitida na tela
+**Integrações** — sem credencial válida, `401`. As ações de escrita ficam marcadas como
+**geradas por IA** (derivado da credencial).
+
+São **10 ferramentas** com paridade total à API: `listar_clientes`, `obter_cliente`, `acoes_hoje`,
+`listar_interacoes`, `criar_cliente`, `atualizar_cliente`, `mover_etapa`, `registrar_interacao`,
+`exportar_cliente`, `excluir_cliente`. Detalhes em [docs/MCP.md](docs/MCP.md).
+
+```bash
+# descobrir as ferramentas disponíveis
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer SUA_CHAVE_DE_API" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
 ## Privacidade (LGPD)
 
 - Dados sensíveis: contato pessoal, conteúdo de conversas, valores/propostas.
@@ -90,4 +113,4 @@ prepared statements (sem SQL injection) e handler global de erros. Detalhes em [
 
 ## Stack
 
-Node.js + Express · SQLite (`better-sqlite3`) · bcryptjs · helmet · HTML/CSS/JS puro.
+Node.js + Express · SQLite (`better-sqlite3`) · bcryptjs · helmet · `@modelcontextprotocol/sdk` (servidor MCP) · HTML/CSS/JS puro.

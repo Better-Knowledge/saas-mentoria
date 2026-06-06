@@ -130,6 +130,33 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// ---------- autenticação do servidor MCP (plano de máquina) ----------
+// Resolução de credencial isolada atrás de uma única função: hoje só valida API keys Bearer;
+// no futuro um validador de tokens OAuth do MCP pode ser plugado aqui sem quebrar as chaves já
+// emitidas — ambos os caminhos produzem o mesmo `principal`.
+function resolverPrincipal(req) {
+  const header = req.headers['authorization'] || '';
+  if (header.startsWith('Bearer ')) {
+    const k = verificarApiKey(header.slice(7));
+    if (k) return { tipo: 'ia', credencial: 'apikey', id: k.id, nome: k.nome };
+  }
+  return null;
+}
+
+// Exige Bearer válido para o endpoint MCP. Sem credencial válida → 401 (nunca anônimo).
+function requireBearer(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  if (!header.startsWith('Bearer ')) {
+    return res.status(401).json({ erro: 'Não autenticado' });
+  }
+  const principal = resolverPrincipal(req);
+  if (!principal) {
+    return res.status(401).json({ erro: 'Chave de API inválida ou revogada' });
+  }
+  req.principal = principal;
+  next();
+}
+
 // Cria o primeiro admin se não houver nenhum usuário.
 function bootstrapAdmin() {
   if (contarUsuarios() > 0) return;
@@ -153,4 +180,5 @@ module.exports = {
   criarSessao, obterSessao, destruirSessao, setCookieSessao, limparCookieSessao,
   criarApiKey, listarApiKeys, revogarApiKey,
   requireAuth, csrfProtect, requireAdmin, bootstrapAdmin,
+  resolverPrincipal, requireBearer,
 };

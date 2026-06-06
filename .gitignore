@@ -4,3 +4,7 @@ node_modules/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Ferramentas/locais (não versionar)
+.claude/
+.playwright-mcp/
