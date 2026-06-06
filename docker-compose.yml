@@ -1,0 +1,25 @@
+# /opt/docker-services/crm-mentoria/docker-compose.yml
+services:
+  app:
+    build: .
+    container_name: crm-mentoria
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    networks:
+      - web
+    volumes:
+      - ./data:/app/data   # persiste o SQLite (crm.db + WAL)
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.crm-mentoria.entrypoints=websecure"
+      - "traefik.http.routers.crm-mentoria.rule=Host(`mentoria.crm.better-knowledge.com`)"
+      - "traefik.http.routers.crm-mentoria.service=crm-mentoria"
+      - "traefik.http.routers.crm-mentoria.tls.certresolver=letsencrypt"
+      - "traefik.http.services.crm-mentoria.loadbalancer.server.port=3000"
+      - "traefik.http.routers.crm-mentoria.middlewares=secure-headers@file"
+      - "traefik.docker.network=web"
+
+networks:
+  web:
+    external: true

@@ -20,6 +20,9 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       scriptSrc: ["'self'", "'unsafe-inline'"], // app usa handlers inline (onclick)
+      // helmet força script-src-attr 'none' por padrão, o que bloqueia os
+      // handlers inline (onclick/ondragstart/ondrop) — precisamos liberar:
+      scriptSrcAttr: ["'unsafe-inline'"],
       imgSrc: ["'self'", 'data:'],
       connectSrc: ["'self'"],
     },

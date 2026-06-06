@@ -1,0 +1,13 @@
+- generic [ref=e2]:
+  - generic [ref=e3]: IMERSÃO
+  - heading "Mini CRM" [level=1] [ref=e4]:
+    - text: Mini
+    - emphasis [ref=e5]: CRM
+  - paragraph [ref=e6]: Entre para acessar seus clientes.
+  - generic [ref=e7]:
+    - generic [ref=e8]: E-mail
+    - textbox [ref=e9]
+  - generic [ref=e10]:
+    - generic [ref=e11]: Senha
+    - textbox [ref=e12]
+  - button "Entrar" [ref=e13] [cursor=pointer]

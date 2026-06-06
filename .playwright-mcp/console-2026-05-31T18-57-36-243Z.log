@@ -1,0 +1,2 @@
+[     360ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://mentoria.crm.better-knowledge.com/api/auth/me:0
+[     533ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://mentoria.crm.better-knowledge.com/favicon.ico:0

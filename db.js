@@ -1,8 +1,14 @@
 // db.js — conexao com o SQLite e criacao das tabelas (schema)
 const path = require('path');
+const fs = require('fs');
 const Database = require('better-sqlite3');
 
-const db = new Database(path.join(__dirname, 'crm.db'));
+// Diretorio de dados (persistencia). Em Docker apontamos para um volume
+// via DATA_DIR; localmente cai no proprio diretorio do projeto.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const db = new Database(path.join(DATA_DIR, 'crm.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
