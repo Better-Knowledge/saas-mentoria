@@ -360,7 +360,7 @@ function mostrarApp() {
   document.getElementById('app').classList.remove('escondido');
   document.getElementById('usuario-nome').textContent = USUARIO ? USUARIO.nome.split(' ')[0] : '';
   // some o botão de integrações se não for admin
-  document.getElementById('btnIntegracoes').style.display = (USUARIO && USUARIO.papel === 'admin') ? '' : 'none';
+  document.getElementById('btnIntegracoes').style.display = (USUARIO && ['owner', 'admin'].includes(USUARIO.papel)) ? '' : 'none';
 }
 
 document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -376,7 +376,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     });
     const d = await resp.json();
     if (!resp.ok) throw new Error(d.erro || 'Falha no login');
-    USUARIO = d.usuario; CSRF = d.csrf;
+    USUARIO = d.usuario; CSRF = d.csrf; if (d.org) USUARIO.papel = d.org.papel;
     mostrarApp();
     carregarHoje();
   } catch (err) {
@@ -470,7 +470,7 @@ Object.assign(window, {
     const resp = await fetch('/api/auth/me', { credentials: 'same-origin' });
     if (resp.ok) {
       const d = await resp.json();
-      USUARIO = d.usuario; CSRF = d.csrf;
+      USUARIO = d.usuario; CSRF = d.csrf; if (d.org) USUARIO.papel = d.org.papel;
       mostrarApp();
       carregarHoje();
     } else {

@@ -5,7 +5,7 @@
 services:
   app:
     build: .
-    container_name: crm-mentoria
+    container_name: saas-mentoria
     restart: unless-stopped
     env_file:
       - ./.env
@@ -18,18 +18,18 @@ services:
       - ./data:/app/data   # SQLite legado (durante a transição; removido no cutover, T048)
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.crm-mentoria.entrypoints=websecure"
-      - "traefik.http.routers.crm-mentoria.rule=Host(`mentoria.crm.better-knowledge.com`)"
-      - "traefik.http.routers.crm-mentoria.service=crm-mentoria"
-      - "traefik.http.routers.crm-mentoria.tls.certresolver=letsencrypt"
-      - "traefik.http.services.crm-mentoria.loadbalancer.server.port=3000"
-      - "traefik.http.routers.crm-mentoria.middlewares=secure-headers@file"
+      - "traefik.http.routers.saas-mentoria.entrypoints=websecure"
+      - "traefik.http.routers.saas-mentoria.rule=Host(`mentoria.saas.better-knowledge.com`)"
+      - "traefik.http.routers.saas-mentoria.service=saas-mentoria"
+      - "traefik.http.routers.saas-mentoria.tls.certresolver=letsencrypt"
+      - "traefik.http.services.saas-mentoria.loadbalancer.server.port=3000"
+      - "traefik.http.routers.saas-mentoria.middlewares=secure-headers@file"
       - "traefik.docker.network=web"
 
   # Worker da fila (pg-boss): ingestão de WhatsApp, jobs de IA, cobrança, reconciliação.
   worker:
     build: .
-    container_name: crm-mentoria-worker
+    container_name: saas-mentoria-worker
     restart: unless-stopped
     command: ["node", "jobs/worker.js"]
     env_file:
@@ -44,7 +44,7 @@ services:
   # deploy (T050); este POSTGRES_PASSWORD é do superuser, usado só para migrações/admin.
   postgres:
     image: postgres:16
-    container_name: crm-mentoria-pg
+    container_name: saas-mentoria-pg
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -59,7 +59,7 @@ services:
   # confirmados no deploy (T050). O app fala com ela via EVOLUTION_URL=http://evolution:8080.
   evolution:
     image: atendai/evolution-api:latest
-    container_name: crm-mentoria-evolution
+    container_name: saas-mentoria-evolution
     restart: unless-stopped
     env_file:
       - ./.env

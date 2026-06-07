@@ -5,11 +5,11 @@
 
 exports.shorthands = undefined;
 
-// Tabelas de tenant que recebem RLS por org_id (audit_log fica fora: é cross-cutting,
-// filtrado na aplicação — tenant vê o seu org_id, operador lê via withoutOrg).
+// Tabelas de tenant que recebem RLS por org_id. Ficam FORA do RLS (filtradas por org_id na
+// aplicação) as tabelas de autenticação/lookup global: api_keys (lookup por key_hash, sem org
+// no contexto), whatsapp_connections (lookup por instance_ref no webhook) e audit_log (cross-cutting).
 const TENANT_TABLES = [
-  'clientes', 'interacoes', 'api_keys',
-  'whatsapp_connections', 'whatsapp_messages', 'ai_usage',
+  'clientes', 'interacoes', 'whatsapp_messages', 'ai_usage',
 ];
 
 exports.up = (pgm) => {
