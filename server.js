@@ -18,6 +18,9 @@ const gating = require('./tenancy/plan-gating');
 const ai = require('./ai/tasks');
 const aiClaude = require('./ai/claude');
 const aiUsage = require('./ai/usage');
+const whatsappConn = require('./whatsapp/connections');
+const whatsappIngest = require('./whatsapp/ingest');
+const { adapterFor } = require('./whatsapp/provider');
 
 const openapiSpec = yaml.load(fs.readFileSync(path.join(__dirname, 'openapi.yaml'), 'utf8'));
 
@@ -174,6 +177,62 @@ app.post('/api/gordon', auth.requireAuth, auth.csrfProtect, gating.requirePlan('
   }
   const resposta = await ai.gordon(req.principal.org_id, mensagem, Array.isArray(historico) ? historico : []);
   res.json({ resposta });
+}));
+
+// =================== WHATSAPP (plano VIP — credencial por organização) ===================
+const vipWhatsapp = gating.requirePlan('whatsapp_ia');
+
+app.get('/api/whatsapp', auth.requireAuth, vipWhatsapp, asyncH(async (req, res) => {
+  res.json({ conexao: whatsappConn.publico(await whatsappConn.get(req.principal.org_id)) });
+}));
+
+app.post('/api/whatsapp/connect', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, vipWhatsapp, asyncH(async (req, res) => {
+  const { provider, base_url, api_key, instance_ref } = req.body || {};
+  if ((provider || 'evolution') === 'evolution' && (!base_url || !api_key)) {
+    return res.status(400).json({ erro: 'Informe a URL e a API key da sua Evolution' });
+  }
+  const conn = await whatsappConn.upsert(req.principal.org_id, { provider, base_url, api_key, instance_ref });
+  const webhookUrl = `${(process.env.APP_URL || '').replace(/\/+$/, '')}/webhooks/whatsapp/${conn.provider}?t=${conn.webhook_token}`;
+  try { await adapterFor(conn.provider).createInstance(conn, { webhookUrl }); }
+  catch (e) { console.error('createInstance:', e.message); /* instância pode já existir — segue p/ QR */ }
+  res.status(201).json({ ok: true, instance_ref: conn.instance_ref });
+}));
+
+app.get('/api/whatsapp/qr', auth.requireAuth, vipWhatsapp, asyncH(async (req, res) => {
+  const conn = await whatsappConn.getCom(req.principal.org_id);
+  if (!conn) return res.status(404).json({ erro: 'Conexão não iniciada' });
+  res.json(await adapterFor(conn.provider).getQrCode(conn));
+}));
+
+app.get('/api/whatsapp/status', auth.requireAuth, vipWhatsapp, asyncH(async (req, res) => {
+  const conn = await whatsappConn.getCom(req.principal.org_id);
+  if (!conn) return res.json({ estado: 'desconectado' });
+  const estado = await adapterFor(conn.provider).getConnectionState(conn);
+  await whatsappConn.setEstado(req.principal.org_id, estado);
+  res.json({ estado });
+}));
+
+app.post('/api/whatsapp/disconnect', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, vipWhatsapp, asyncH(async (req, res) => {
+  const conn = await whatsappConn.getCom(req.principal.org_id);
+  if (conn) { try { await adapterFor(conn.provider).logout(conn); } catch (_) { /* idempotente */ } await whatsappConn.remove(req.principal.org_id); }
+  res.json({ ok: true });
+}));
+
+// Webhook inbound do WhatsApp: identifica a org pela instância, verifica o token (sem sessão/Bearer).
+app.post('/webhooks/whatsapp/:provider', asyncH(async (req, res) => {
+  const payload = req.body || {};
+  const instance = payload.instance || (payload.data && payload.data.instance);
+  if (!instance) return res.json({ ok: true, ignorado: 'sem instancia' });
+  const conn = await whatsappConn.porInstancia(instance);
+  if (!conn) return res.json({ ok: true, ignorado: 'instancia desconhecida' });
+  const tok = String(req.query.t || req.headers['x-webhook-token'] || '');
+  const ref = String(conn.webhook_token || '');
+  const ok = ref && tok.length === ref.length && require('crypto').timingSafeEqual(Buffer.from(tok), Buffer.from(ref));
+  if (!ok) return res.status(401).json({ erro: 'Token de webhook inválido' });
+  const evt = String(payload.event || '').toLowerCase();
+  if (evt && !evt.includes('messages')) return res.json({ ok: true, ignorado: evt });
+  const resultado = await whatsappIngest.ingestInbound(conn, payload);
+  res.json({ ok: true, ...resultado });
 }));
 
 // =================== COBRANÇA (pagar.me) ===================
