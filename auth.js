@@ -52,6 +52,12 @@ async function signup({ nome, email, senha, nomeOrg }) {
         "INSERT INTO memberships (usuario_id, org_id, papel) VALUES ($1,$2,'owner')",
         [usuario.id, org.id]
       );
+      // Assinatura inicial: trial de 14 dias no plano Básico (sem cobrança até o fim do trial).
+      const trialDias = Number(process.env.TRIAL_DIAS || 14);
+      await client.query(`
+        INSERT INTO subscriptions (org_id, plan_id, status, trial_end)
+        VALUES ($1, (SELECT id FROM plans WHERE codigo = 'basico'), 'trialing', now() + ($2 || ' days')::interval)`,
+        [org.id, String(trialDias)]);
       await client.query('COMMIT');
       return { usuario, org };
     } catch (e) {
@@ -221,11 +227,21 @@ async function bootstrapInicial() {
   console.log('========================================================');
 }
 
+// Backfill: garante que toda organização tenha uma assinatura (trial Básico p/ orgs sem assinatura).
+async function ensureSubscriptions() {
+  const trialDias = Number(process.env.TRIAL_DIAS || 14);
+  await pool.query(`
+    INSERT INTO subscriptions (org_id, plan_id, status, trial_end)
+    SELECT o.id, (SELECT id FROM plans WHERE codigo = 'basico'), 'trialing', now() + ($1 || ' days')::interval
+    FROM organizations o
+    WHERE NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.org_id = o.id)`, [String(trialDias)]);
+}
+
 module.exports = {
   COOKIE_NOME, verificarSenha,
   buscarUsuarioPorEmail, signup, orgsDoUsuario,
   criarSessao, obterSessao, destruirSessao, trocarOrgAtiva, setCookieSessao, limparCookieSessao,
   criarApiKey, listarApiKeys, revogarApiKey, verificarApiKey,
   requireAuth, csrfProtect, requireAdmin, resolverPrincipal, requireBearer,
-  bootstrapInicial,
+  bootstrapInicial, ensureSubscriptions,
 };

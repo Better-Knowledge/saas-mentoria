@@ -11,6 +11,10 @@ const swaggerUi = require('swagger-ui-express');
 const db = require('./db');
 const auth = require('./auth');
 const crm = require('./crm-service'); // lógica de domínio compartilhada por REST e MCP
+const billing = require('./billing/plans');
+const billingState = require('./billing/state');
+const pagarme = require('./billing/pagarme');
+const gating = require('./tenancy/plan-gating');
 
 const openapiSpec = yaml.load(fs.readFileSync(path.join(__dirname, 'openapi.yaml'), 'utf8'));
 
@@ -33,7 +37,7 @@ app.use(helmet({
   },
   hsts: process.env.NODE_ENV === 'production',
 }));
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '64kb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(cookieParser());
 
 app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, max: 600 }));
@@ -68,7 +72,8 @@ app.post('/api/auth/login', loginLimiter, asyncH(async (req, res) => {
   const orgAtiva = orgs[0] ? orgs[0].id : null;
   const { token, csrf } = await auth.criarSessao(u.id, orgAtiva);
   auth.setCookieSessao(res, token);
-  res.json({ usuario: { id: u.id, nome: u.nome, email: u.email }, org: orgs[0] || null, csrf });
+  const ents = orgAtiva ? billing.entitlements(await billing.assinaturaDaOrg(orgAtiva)) : null;
+  res.json({ usuario: { id: u.id, nome: u.nome, email: u.email }, org: orgs[0] || null, entitlements: ents, csrf });
 }));
 
 app.post('/api/auth/logout', auth.requireAuth, asyncH(async (req, res) => {
@@ -81,9 +86,11 @@ app.post('/api/auth/logout', auth.requireAuth, asyncH(async (req, res) => {
 app.get('/api/auth/me', asyncH(async (req, res) => {
   const s = await auth.obterSessao(req.cookies && req.cookies[auth.COOKIE_NOME]);
   if (!s) return res.status(401).json({ erro: 'Não autenticado' });
+  const ents = s.org_ativa ? billing.entitlements(await billing.assinaturaDaOrg(s.org_ativa)) : null;
   res.json({
     usuario: { id: s.usuario_id, nome: s.nome, email: s.email },
     org: { id: s.org_ativa, papel: s.papel },
+    entitlements: ents,
     csrf: s.csrf,
   });
 }));
@@ -122,13 +129,13 @@ app.get('/api/clientes', auth.requireAuth, asyncH(async (req, res) => {
 app.get('/api/clientes/:id', auth.requireAuth, asyncH(async (req, res) => {
   res.json(await comOrg(req, (c) => crm.obterCliente(c, req.params.id)));
 }));
-app.post('/api/clientes', auth.requireAuth, auth.csrfProtect, asyncH(async (req, res) => {
+app.post('/api/clientes', auth.requireAuth, auth.csrfProtect, gating.requireAccess, asyncH(async (req, res) => {
   res.status(201).json(await comOrg(req, (c) => crm.criarCliente(c, req.body, autorDe(req))));
 }));
-app.put('/api/clientes/:id', auth.requireAuth, auth.csrfProtect, asyncH(async (req, res) => {
+app.put('/api/clientes/:id', auth.requireAuth, auth.csrfProtect, gating.requireAccess, asyncH(async (req, res) => {
   res.json(await comOrg(req, (c) => crm.atualizarCliente(c, req.params.id, req.body)));
 }));
-app.put('/api/clientes/:id/etapa', auth.requireAuth, auth.csrfProtect, asyncH(async (req, res) => {
+app.put('/api/clientes/:id/etapa', auth.requireAuth, auth.csrfProtect, gating.requireAccess, asyncH(async (req, res) => {
   res.json(await comOrg(req, (c) => crm.moverEtapa(c, req.params.id, req.body || {})));
 }));
 app.get('/api/clientes/:id/export', auth.requireAuth, asyncH(async (req, res) => {
@@ -144,13 +151,46 @@ app.delete('/api/clientes/:id', auth.requireAuth, auth.csrfProtect, asyncH(async
 app.get('/api/clientes/:id/interacoes', auth.requireAuth, asyncH(async (req, res) => {
   res.json(await comOrg(req, (c) => crm.listarInteracoes(c, req.params.id)));
 }));
-app.post('/api/clientes/:id/interacoes', auth.requireAuth, auth.csrfProtect, asyncH(async (req, res) => {
+app.post('/api/clientes/:id/interacoes', auth.requireAuth, auth.csrfProtect, gating.requireAccess, asyncH(async (req, res) => {
   res.status(201).json(await comOrg(req, (c) => crm.registrarInteracao(c, req.params.id, req.body.texto, autorDe(req))));
 }));
 
 // =================== TELA "HOJE" ===================
 app.get('/api/hoje', auth.requireAuth, asyncH(async (req, res) => {
   res.json(await comOrg(req, (c) => crm.acoesHoje(c)));
+}));
+
+// =================== COBRANÇA (pagar.me) ===================
+app.get('/api/billing', auth.requireAuth, asyncH(async (req, res) => {
+  const sub = await billing.assinaturaDaOrg(req.principal.org_id);
+  res.json({ entitlements: billing.entitlements(sub), planos: await billing.listarPlanos(), pagarme: pagarme.configurado() });
+}));
+app.post('/api/billing/change-plan', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, asyncH(async (req, res) => {
+  const plano = await billing.planoPorCodigo((req.body || {}).plano);
+  if (!plano) return res.status(400).json({ erro: 'Plano inválido' });
+  const sub = await billing.assinaturaDaOrg(req.principal.org_id);
+  if (sub && sub.status === 'trialing') {                       // durante o trial: troca local, sem cobrança
+    await db.query('UPDATE subscriptions SET plan_id = $1, updated_at = now() WHERE org_id = $2', [plano.id, req.principal.org_id]);
+    return res.json({ ok: true, plano: plano.codigo, trial: true });
+  }
+  if (!pagarme.configurado()) return res.status(503).json({ erro: 'Cobrança indisponível: configure o pagar.me', billing: true });
+  return res.status(501).json({ erro: 'Troca de plano paga ainda não habilitada (aguardando wiring do pagar.me)' });
+}));
+app.post('/api/billing/subscribe', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, asyncH(async (req, res) => {
+  if (!pagarme.configurado()) return res.status(503).json({ erro: 'Cobrança indisponível: configure o pagar.me', billing: true });
+  return res.status(501).json({ erro: 'Checkout pagar.me ainda não habilitado (aguardando chaves)' });
+}));
+app.post('/api/billing/cancel', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, asyncH(async (req, res) => {
+  if (!pagarme.configurado()) return res.status(503).json({ erro: 'Cobrança indisponível: configure o pagar.me', billing: true });
+  return res.status(501).json({ erro: 'Cancelamento pagar.me ainda não habilitado' });
+}));
+
+// Webhook do pagar.me: assinatura verificada + idempotente (sem sessão/Bearer; segurança = assinatura).
+app.post('/webhooks/pagarme', asyncH(async (req, res) => {
+  const assinatura = req.headers['x-hub-signature'] || req.headers['x-pagarme-signature'] || '';
+  if (!pagarme.verificarWebhook(req.rawBody, assinatura)) return res.status(401).json({ erro: 'Assinatura inválida' });
+  const resultado = await billingState.processarEvento(req.body);
+  res.json({ ok: true, ...resultado });
 }));
 
 // ---- documentação da API ----
@@ -174,6 +214,10 @@ async function iniciar() {
   });
 
   await auth.bootstrapInicial();
+  await auth.ensureSubscriptions();
+  await billingState.verificarVencimentos().catch((e) => console.error('vencimentos (boot):', e.message));
+  // agendador leve de vencimentos de trial/carência (sem fila por enquanto)
+  setInterval(() => billingState.verificarVencimentos().catch((e) => console.error('vencimentos:', e.message)), 60 * 60 * 1000);
   app.listen(PORT, () => console.log(`SaaS Mentoria rodando em http://localhost:${PORT}`));
 }
 

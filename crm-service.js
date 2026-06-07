@@ -60,6 +60,16 @@ async function obterCliente(client, id) {
 async function criarCliente(client, body, autor) {
   const c = montaCliente(body);
   if (!c.nome) throw new ErroDominio('O campo nome e obrigatorio', 400);
+  // Limite de clientes do plano — imposto no servidor em TODOS os caminhos (REST, MCP, Gordon).
+  const { rows: lim } = await client.query(`
+    SELECT p.limite_clientes FROM subscriptions s JOIN plans p ON p.id = s.plan_id
+    WHERE s.org_id = current_setting('app.current_org')::uuid`);
+  if (lim[0] && lim[0].limite_clientes != null) {
+    const { rows: cnt } = await client.query('SELECT COUNT(*)::int AS n FROM clientes');
+    if (cnt[0].n >= lim[0].limite_clientes) {
+      throw new ErroDominio(`Limite de ${lim[0].limite_clientes} clientes do plano atingido`, 403);
+    }
+  }
   const { rows } = await client.query(`
     INSERT INTO clientes
       (org_id, nome, empresa, cargo, telefone, email, tipo_cliente, origem, etapa, resultado,
