@@ -1,14 +1,18 @@
 {
-  "name": "mini-crm",
-  "version": "1.0.0",
-  "description": "Mini CRM sob medida para consultoria e solucoes de IA Generativa",
+  "name": "saas-mentoria",
+  "version": "2.0.0",
+  "description": "SaaS de CRM com IA (multi-tenant) — planos, cobranca pagar.me, WhatsApp e Claude",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "worker": "node jobs/worker.js",
+    "migrate": "node-pg-migrate -m migrations",
+    "verify:rls": "node scripts/verify-rls.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.3.0",
@@ -18,6 +22,9 @@
     "express-rate-limit": "^7.4.0",
     "helmet": "^8.0.0",
     "js-yaml": "^4.2.0",
+    "node-pg-migrate": "^7.0.0",
+    "pg": "^8.13.0",
+    "pg-boss": "^10.0.0",
     "swagger-ui-express": "^5.0.1",
     "zod": "^3.25.76"
   }
