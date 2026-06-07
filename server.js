@@ -192,10 +192,15 @@ app.post('/api/whatsapp/connect', auth.requireAuth, auth.csrfProtect, auth.requi
     return res.status(400).json({ erro: 'Informe a URL e a API key da sua Evolution' });
   }
   const conn = await whatsappConn.upsert(req.principal.org_id, { provider, base_url, api_key, instance_ref });
+  const adapter = adapterFor(conn.provider);
   const webhookUrl = `${(process.env.APP_URL || '').replace(/\/+$/, '')}/webhooks/whatsapp/${conn.provider}?t=${conn.webhook_token}`;
-  try { await adapterFor(conn.provider).createInstance(conn, { webhookUrl }); }
-  catch (e) { console.error('createInstance:', e.message); /* instância pode já existir — segue p/ QR */ }
-  res.status(201).json({ ok: true, instance_ref: conn.instance_ref });
+  // Se a instância NÃO existe, cria (precisa da global key da Evolution); se já existe, ignora o erro.
+  try { await adapter.createInstance(conn, { webhookUrl }); } catch (e) { console.error('createInstance:', e.message); }
+  // Aponta o webhook da instância p/ o CRM (passo que liga a linha ao sistema).
+  try { await adapter.setWebhook(conn, webhookUrl); } catch (e) { console.error('setWebhook:', e.message); }
+  const estado = await adapter.getConnectionState(conn);
+  await whatsappConn.setEstado(req.principal.org_id, estado);
+  res.status(201).json({ ok: true, instance_ref: conn.instance_ref, estado, precisa_qr: estado !== 'conectado' });
 }));
 
 app.get('/api/whatsapp/qr', auth.requireAuth, vipWhatsapp, asyncH(async (req, res) => {
@@ -284,6 +289,7 @@ async function iniciar() {
   app.use((err, req, res, next) => {
     const status = err && Number.isInteger(err.status) ? err.status : 500;
     if (status < 500) return res.status(status).json({ erro: err.message });
+    if (status === 502 || status === 503) return res.status(status).json({ erro: err.message }); // provider/config externo
     console.error('Erro:', err && err.message);
     res.status(500).json({ erro: 'Erro interno' });
   });

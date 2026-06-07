@@ -47,6 +47,20 @@ async function sendMessage(conn, to, text) {
   return { provider_msg_id: (data.key && data.key.id) || data.id || null };
 }
 
+// Aponta o webhook da instância para o nosso CRM (v2.3.7: POST /webhook/set/{instance}).
+// É o passo que "liga" a linha ao sistema — vale tanto p/ instância criada agora quanto existente.
+async function setWebhook(conn, webhookUrl) {
+  return call(conn, 'POST', `/webhook/set/${encodeURIComponent(conn.instance_ref)}`, {
+    webhook: {
+      enabled: true,
+      url: webhookUrl,
+      webhookByEvents: false,
+      webhookBase64: true,
+      events: ['MESSAGES_UPSERT'],
+    },
+  });
+}
+
 async function logout(conn) {
   try { await call(conn, 'DELETE', `/instance/logout/${encodeURIComponent(conn.instance_ref)}`); } catch (_) { /* idempotente */ }
   try { await call(conn, 'DELETE', `/instance/delete/${encodeURIComponent(conn.instance_ref)}`); } catch (_) { /* idempotente */ }
@@ -76,4 +90,4 @@ function parseInbound(payload) {
   };
 }
 
-module.exports = { createInstance, getQrCode, getConnectionState, sendMessage, logout, parseInbound };
+module.exports = { createInstance, setWebhook, getQrCode, getConnectionState, sendMessage, logout, parseInbound };
