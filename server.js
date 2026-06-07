@@ -15,6 +15,9 @@ const billing = require('./billing/plans');
 const billingState = require('./billing/state');
 const pagarme = require('./billing/pagarme');
 const gating = require('./tenancy/plan-gating');
+const ai = require('./ai/tasks');
+const aiClaude = require('./ai/claude');
+const aiUsage = require('./ai/usage');
 
 const openapiSpec = yaml.load(fs.readFileSync(path.join(__dirname, 'openapi.yaml'), 'utf8'));
 
@@ -158,6 +161,19 @@ app.post('/api/clientes/:id/interacoes', auth.requireAuth, auth.csrfProtect, gat
 // =================== TELA "HOJE" ===================
 app.get('/api/hoje', auth.requireAuth, asyncH(async (req, res) => {
   res.json(await comOrg(req, (c) => crm.acoesHoje(c)));
+}));
+
+// =================== GORDON (assistente de IA) ===================
+app.post('/api/gordon', auth.requireAuth, auth.csrfProtect, gating.requirePlan('gordon_chat'), asyncH(async (req, res) => {
+  const { mensagem, historico } = req.body || {};
+  if (!mensagem || !String(mensagem).trim()) return res.status(400).json({ erro: 'Envie uma mensagem' });
+  if (!aiClaude.configurado()) return res.status(503).json({ erro: 'IA indisponível: configure ANTHROPIC_API_KEY' });
+  const ents = await gating.carregarEntitlements(req);
+  if (!(await aiUsage.dentroDoOrcamento(req.principal.org_id, ents.features))) {
+    return res.status(402).json({ erro: 'Orçamento de IA do período atingido', billing: true });
+  }
+  const resposta = await ai.gordon(req.principal.org_id, mensagem, Array.isArray(historico) ? historico : []);
+  res.json({ resposta });
 }));
 
 // =================== COBRANÇA (pagar.me) ===================
