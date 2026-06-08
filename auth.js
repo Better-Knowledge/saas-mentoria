@@ -91,7 +91,7 @@ async function obterSessao(token) {
   if (!token) return null;
   const { rows } = await pool.query(`
     SELECT s.token, s.usuario_id, s.csrf, s.expira_em, s.org_ativa,
-           u.nome, u.email, m.papel
+           u.nome, u.email, u.is_operator, m.papel
     FROM sessoes s
     JOIN usuarios u ON u.id = s.usuario_id
     LEFT JOIN memberships m ON m.usuario_id = s.usuario_id AND m.org_id = s.org_ativa
@@ -162,7 +162,7 @@ async function requireAuth(req, res, next) {
       if (!s.org_ativa) return res.status(403).json({ erro: 'Sem organização ativa' });
       req.principal = {
         tipo: 'humano', credencial: 'sessao', id: s.usuario_id, nome: s.nome,
-        papel: s.papel, org_id: s.org_ativa, csrf: s.csrf,
+        papel: s.papel, org_id: s.org_ativa, csrf: s.csrf, operador: !!s.is_operator,
       };
       return next();
     }
@@ -186,6 +186,14 @@ function requireAdmin(req, res, next) {
   if (!req.principal || req.principal.credencial !== 'sessao'
       || !['owner', 'admin'].includes(req.principal.papel)) {
     return res.status(403).json({ erro: 'Apenas administradores da organização' });
+  }
+  next();
+}
+
+// Restringe ao OPERADOR de plataforma (papel global, via sessão). Para o painel cross-tenant.
+function requireOperator(req, res, next) {
+  if (!req.principal || req.principal.credencial !== 'sessao' || !req.principal.operador) {
+    return res.status(403).json({ erro: 'Acesso restrito ao operador da plataforma' });
   }
   next();
 }
@@ -227,6 +235,15 @@ async function bootstrapInicial() {
   console.log('========================================================');
 }
 
+// Marca o operador de plataforma a partir do .env (OPERATOR_EMAIL, ou ADMIN_EMAIL como padrão).
+// Idempotente; só promove um e-mail já existente. Sem operador definido, o painel fica inacessível.
+async function ensureOperator() {
+  const email = (process.env.OPERATOR_EMAIL || process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+  if (!email) return;
+  const r = await pool.query('UPDATE usuarios SET is_operator = true WHERE lower(email) = $1 AND is_operator = false', [email]);
+  if (r.rowCount > 0) console.log(`Operador de plataforma definido: ${email}`);
+}
+
 // Backfill: garante que toda organização tenha uma assinatura (trial Básico p/ orgs sem assinatura).
 async function ensureSubscriptions() {
   const trialDias = Number(process.env.TRIAL_DIAS || 14);
@@ -242,6 +259,6 @@ module.exports = {
   buscarUsuarioPorEmail, signup, orgsDoUsuario,
   criarSessao, obterSessao, destruirSessao, trocarOrgAtiva, setCookieSessao, limparCookieSessao,
   criarApiKey, listarApiKeys, revogarApiKey, verificarApiKey,
-  requireAuth, csrfProtect, requireAdmin, resolverPrincipal, requireBearer,
-  bootstrapInicial, ensureSubscriptions,
+  requireAuth, csrfProtect, requireAdmin, requireOperator, resolverPrincipal, requireBearer,
+  bootstrapInicial, ensureSubscriptions, ensureOperator,
 };

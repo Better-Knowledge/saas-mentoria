@@ -15,17 +15,30 @@ O Mini CRM (dono único, SQLite) foi transformado em **SaaS multi-tenant em prod
 `scripts/verify-*.js` + smokes em produção). Roda em `https://mentoria.saas.better-knowledge.com`
 (container `saas-mentoria`), com o app antigo `crm-mentoria` intacto como fallback.
 
-## 🔴 BLOQUEADOR ATUAL (ação do usuário) — DNS errado
+## ✅ BLOQUEADOR RESOLVIDO (2026-06-07, sessão de continuação) — era roteamento Traefik, não DNS
 
-`mentoria.saas.better-knowledge.com` resolve para **72.62.9.198**, mas o servidor onde rodam Traefik +
-apps (o mesmo do `mentoria.crm`, que tem cert válido) é **145.223.29.66**. Consequências:
-1. Cert servido é `TRAEFIK DEFAULT CERT` (auto-assinado) → Let's Encrypt não emite.
-2. **A Evolution não entrega os webhooks** (recusa cert inválido) → mensagens reais de WhatsApp não
-   chegam ao CRM, mesmo com a linha conectada.
+**O diagnóstico anterior estava errado.** O DNS de `mentoria.saas.better-knowledge.com` resolve para
+**72.62.9.198**, que **é este host** (onde rodam Traefik + apps). Não havia nada a corrigir no DNS — o
+IP `145.223.29.66` é de **outro** host (para onde aponta `mentoria.crm.better-knowledge.com`, irrelevante:
+o CRM local serve `mentoria.crm.fernandofaraco.me`).
 
-**Correção:** apontar o registro **A** de `mentoria.saas.better-knowledge.com` para **145.223.29.66**
-(mesmo IP do `mentoria.crm`). Após propagar, o Traefik emite o cert sozinho e os webhooks fluem.
-Depois: mandar um WhatsApp ao número conectado → deve surgir um lead "WhatsApp" + sentimento por IA.
+**Causa raiz real:** o Traefik está configurado **somente com o provider `file`** (`/etc/traefik/traefik.yml`
+→ `providers.file`, dir `/etc/traefik/dynamic`). **Não há provider `docker`**, então as *labels* Traefik no
+`docker-compose` (do `saas-mentoria` e até do `crm-mentoria`) **nunca são lidas**. Sem um arquivo de
+roteamento, o Traefik servia o `TRAEFIK DEFAULT CERT` e o Let's Encrypt nunca era acionado.
+
+**Correção aplicada:** criado `/opt/docker-services/traefik/dynamic/saas-mentoria.yml` (no host, espelhando
+o `crm-mentoria.yml`): router `Host(mentoria.saas...)` → service `http://saas-mentoria:3000`, middleware
+`secure-headers`, `certResolver: letsencrypt`. Traefik observa o dir (`watch: true`) e emitiu o cert via
+HTTP-01 em ~10s. **Estado atual:** `https://mentoria.saas.better-knowledge.com/` → HTTP 200, cert válido
+Let's Encrypt (CN=mentoria.saas..., válido até 2026-09-05), redirect 301 HTTP→HTTPS ativo.
+
+**Próximo (ação do usuário):** agora que o cert é válido, a Evolution deve aceitar os webhooks. Mandar um
+WhatsApp ao número conectado (`oFernandoFaraco`) → deve surgir um lead "WhatsApp" + sentimento por IA.
+Se não chegar, conferir a URL do webhook na instância da Evolution (deve apontar p/ `https://mentoria.saas.../...`).
+
+> ⚠️ Nota de infra: as labels Traefik no `docker-compose.yml` deste repo são **decorativas** (não há provider
+> docker). Qualquer host/router novo precisa de um arquivo em `/opt/docker-services/traefik/dynamic/`.
 
 ---
 
@@ -61,12 +74,33 @@ mensagens por causa do bloqueador de DNS acima.
 
 ## ⏳ Pendências (prioridade)
 
-1. **DNS/cert** (bloqueador acima) → destrava WhatsApp ao vivo + HTTPS público.
-2. **Auto-atendimento de IA** (resto da Fase 7): `ai.auto_resposta` + `provider.sendMessage` + handoff
-   para humano + rate limit de envio. Resumo de conversa (`ai.resumir`, já existe) ainda não é
-   disparado por threshold — só sentimento por inbound hoje.
-3. **Painel do operador** (Fase 8): consultas **cross-tenant explícitas** (fora do `withOrg`),
-   restritas a um papel operador, **auditadas** (`audit_log`). Pasta `operator/` está vazia.
+1. ~~**DNS/cert** (bloqueador acima)~~ ✅ **RESOLVIDO** (roteamento file provider; HTTPS público ok). Resta o
+   teste ao vivo do WhatsApp (ação do usuário: mandar mensagem ao número conectado).
+2. ~~**Auto-atendimento de IA**~~ ✅ **ENTREGUE (2026-06-08, migração 0004)** — "IA por Lead":
+   - **Config por Lead** (`clientes.ai_config` jsonb): `auto_sentimento` (default on) e `auto_resposta`
+     (opt-in VIP) liga/desliga por Lead. O sentimento deixou de ser fixo no inbound.
+   - **Auto-resposta autônoma** (`whatsapp/auto-reply.js`): envia via `provider.sendMessage`, com **rate
+     limit** por Lead (default 5/10min) e **handoff p/ humano** (pedido explícito de humano por keyword,
+     sentimento negativo, ou IA sinalizando `[HANDOFF]`) — no handoff desliga `auto_resposta` e grava nota.
+   - **Documentos de contexto do Lead** (`lead_documents`, RLS): transcrição/resumo/documento/proposta.
+     Ações sob demanda em `POST /api/clientes/:id/ai/acao` (gated `whatsapp_ia` + orçamento de IA).
+   - **UI mínima** na ficha do Lead (`public/app.js`): toggles, botões de ação e lista de documentos.
+     (Obs.: corrigido bug v1 — `onclick="abrirFicha(${id})"` quebrava com ids uuid; agora com aspas.)
+   - Verificado: `scripts/verify-ia-lead.js` **14/14** + RLS **7/7** (Postgres descartável) + smoke real
+     em prod (resumo gerado pelo Claude e persistido). Novos endpoints: `GET/PUT .../ai-config`,
+     `GET/POST/DELETE .../documentos`, `POST .../ai/acao`.
+   - **Pendente menor:** resumo/documento ainda não são disparados por *threshold* automático (são sob
+     demanda); a auto-resposta roda síncrona no webhook (mover p/ fila se virar gargalo).
+3. ~~**Painel do operador**~~ ✅ **ENTREGUE (2026-06-08, migração 0005)** — Fase 8, **somente leitura,
+   métricas agregadas** (decisão do usuário; NÃO acessa o conteúdo dos CRMs). Papel global
+   `usuarios.is_operator` (auth `requireOperator`; `ensureOperator()` no boot promove `OPERATOR_EMAIL`||
+   `ADMIN_EMAIL` → farakeys@gmail.com já é operador em prod). `operator/service.js`: overview/listarOrgs/
+   detalheOrg — tabelas de plataforma sem RLS lidas direto; métricas de tenant (clientes, ai_usage) lidas
+   **por org via `withOrg`** (RLS preservado, app continua sem BYPASSRLS); **toda ação grava `audit_log`**
+   (ator_tipo='operador', org_id NULL). Rotas `GET /api/operator/{overview,orgs,orgs/:id}`. UI: aba
+   "Operador" no front (visível só p/ operador). Verificado: `scripts/verify-operator.js` **14/14**
+   (rodado como `app_login` p/ provar o isolamento por org) + smoke real em prod. **A fazer depois:**
+   ações de gestão (suspender/comp/trocar plano) — hoje é read-only.
 4. **pagar.me ao vivo** (mockado por decisão do usuário): preencher `PAGARME_API_KEY` +
    `PAGARME_WEBHOOK_SECRET`, criar planos no painel pagar.me e completar `billing/pagarme.js` (rotas
    `subscribe`/`change-plan` pago/`cancel` hoje devolvem 503/501). **Confirmar a forma de assinatura do

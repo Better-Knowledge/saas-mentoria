@@ -21,6 +21,7 @@ const aiUsage = require('./ai/usage');
 const whatsappConn = require('./whatsapp/connections');
 const whatsappIngest = require('./whatsapp/ingest');
 const { adapterFor } = require('./whatsapp/provider');
+const operator = require('./operator/service');
 
 const openapiSpec = yaml.load(fs.readFileSync(path.join(__dirname, 'openapi.yaml'), 'utf8'));
 
@@ -57,6 +58,35 @@ const comOrg = (req, fn) => db.withOrg(req.principal.org_id, fn);
 // Autor de uma escrita (auditoria derivada da credencial).
 const autorDe = (req) => (req.principal.tipo === 'humano' ? 'humano' : 'ia');
 
+// Seleciona um trecho da conversa do lead (whatsapp_messages) p/ alimentar uma ação de IA.
+// selecao: { ultimas_n } (default 20) | { desde:'YYYY-MM-DD' } | { de_msg_id, ate_msg_id }.
+async function selecaoMensagens(c, clienteId, selecao = {}) {
+  if (selecao.de_msg_id || selecao.ate_msg_id) {
+    const { rows } = await c.query(`
+      SELECT direcao, conteudo, created_at FROM whatsapp_messages
+      WHERE cliente_id = $1 AND conteudo IS NOT NULL AND conteudo <> ''
+        AND ($2::uuid IS NULL OR created_at >= (SELECT created_at FROM whatsapp_messages WHERE id = $2))
+        AND ($3::uuid IS NULL OR created_at <= (SELECT created_at FROM whatsapp_messages WHERE id = $3))
+      ORDER BY created_at ASC`, [clienteId, selecao.de_msg_id || null, selecao.ate_msg_id || null]);
+    return rows;
+  }
+  if (selecao.desde) {
+    const { rows } = await c.query(`
+      SELECT direcao, conteudo, created_at FROM whatsapp_messages
+      WHERE cliente_id = $1 AND conteudo IS NOT NULL AND conteudo <> '' AND created_at >= $2
+      ORDER BY created_at ASC`, [clienteId, selecao.desde]);
+    return rows;
+  }
+  const n = Math.min(Math.max(parseInt(selecao.ultimas_n, 10) || 20, 1), 200);
+  const { rows } = await c.query(`
+    SELECT direcao, conteudo, created_at FROM whatsapp_messages
+    WHERE cliente_id = $1 AND conteudo IS NOT NULL AND conteudo <> ''
+    ORDER BY created_at DESC LIMIT $2`, [clienteId, n]);
+  return rows.reverse();
+}
+
+const TITULO_PADRAO = { transcricao: 'Transcrição da conversa', resumo: 'Resumo da conversa', documento: 'Documento de contexto', proposta: 'Proposta comercial' };
+
 // =================== AUTENTICAÇÃO / CONTAS ===================
 app.post('/api/auth/signup', loginLimiter, asyncH(async (req, res) => {
   const { nome, email, senha, nome_org } = req.body || {};
@@ -79,7 +109,7 @@ app.post('/api/auth/login', loginLimiter, asyncH(async (req, res) => {
   const { token, csrf } = await auth.criarSessao(u.id, orgAtiva);
   auth.setCookieSessao(res, token);
   const ents = orgAtiva ? billing.entitlements(await billing.assinaturaDaOrg(orgAtiva)) : null;
-  res.json({ usuario: { id: u.id, nome: u.nome, email: u.email }, org: orgs[0] || null, entitlements: ents, csrf });
+  res.json({ usuario: { id: u.id, nome: u.nome, email: u.email }, org: orgs[0] || null, entitlements: ents, operador: !!u.is_operator, csrf });
 }));
 
 app.post('/api/auth/logout', auth.requireAuth, asyncH(async (req, res) => {
@@ -97,6 +127,7 @@ app.get('/api/auth/me', asyncH(async (req, res) => {
     usuario: { id: s.usuario_id, nome: s.nome, email: s.email },
     org: { id: s.org_ativa, papel: s.papel },
     entitlements: ents,
+    operador: !!s.is_operator,
     csrf: s.csrf,
   });
 }));
@@ -240,6 +271,89 @@ app.post('/webhooks/whatsapp/:provider', asyncH(async (req, res) => {
   res.json({ ok: true, ...resultado });
 }));
 
+// =================== IA POR LEAD: config, documentos e ações sob demanda ===================
+// Config de automação de IA do lead (sentimento automático, auto-resposta, persona, rate limit).
+app.get('/api/clientes/:id/ai-config', auth.requireAuth, asyncH(async (req, res) => {
+  res.json(await comOrg(req, (c) => crm.obterAiConfig(c, req.params.id)));
+}));
+app.put('/api/clientes/:id/ai-config', auth.requireAuth, auth.csrfProtect, gating.requireAccess, asyncH(async (req, res) => {
+  // Ligar a auto-resposta autônoma é recurso VIP (envia WhatsApp real).
+  if ((req.body || {}).auto_resposta === true) {
+    const ents = await gating.carregarEntitlements(req);
+    if (!ents.features.whatsapp_ia) return res.status(403).json({ erro: 'Auto-resposta exige o plano VIP', upgrade: true });
+  }
+  res.json(await comOrg(req, (c) => crm.atualizarAiConfig(c, req.params.id, req.body || {})));
+}));
+
+// Documentos de contexto do lead.
+app.get('/api/clientes/:id/documentos', auth.requireAuth, asyncH(async (req, res) => {
+  res.json(await comOrg(req, (c) => crm.listarDocumentos(c, req.params.id)));
+}));
+app.get('/api/clientes/:id/documentos/:docId', auth.requireAuth, asyncH(async (req, res) => {
+  res.json(await comOrg(req, (c) => crm.obterDocumento(c, req.params.id, req.params.docId)));
+}));
+app.post('/api/clientes/:id/documentos', auth.requireAuth, auth.csrfProtect, gating.requireAccess, asyncH(async (req, res) => {
+  const { tipo, titulo, conteudo } = req.body || {};
+  res.status(201).json(await comOrg(req, (c) => crm.criarDocumento(c, req.params.id, { tipo, titulo, conteudo }, 'humano')));
+}));
+app.delete('/api/clientes/:id/documentos/:docId', auth.requireAuth, auth.csrfProtect, gating.requireAccess, asyncH(async (req, res) => {
+  res.json(await comOrg(req, (c) => crm.excluirDocumento(c, req.params.id, req.params.docId)));
+}));
+
+// Ação de IA sob demanda: gera transcrição/resumo/documento/proposta a partir de um trecho da conversa.
+app.post('/api/clientes/:id/ai/acao', auth.requireAuth, auth.csrfProtect, gating.requireAccess, vipWhatsapp, asyncH(async (req, res) => {
+  const { tipo, selecao = {}, instrucao = '', brief = '', limpar = false, titulo } = req.body || {};
+  if (!crm.TIPOS_DOC.includes(tipo)) return res.status(400).json({ erro: 'Tipo de ação inválido' });
+  if (!aiClaude.configurado()) return res.status(503).json({ erro: 'IA indisponível: configure ANTHROPIC_API_KEY' });
+  const orgId = req.principal.org_id;
+  const ents = await gating.carregarEntitlements(req);
+  if (!(await aiUsage.dentroDoOrcamento(orgId, ents.features))) {
+    return res.status(402).json({ erro: 'Orçamento de IA do período atingido', billing: true });
+  }
+  // 1) trecho da conversa (dentro de withOrg → RLS)
+  const mensagens = await comOrg(req, async (c) => {
+    await crm.obterAiConfig(c, req.params.id); // 404 se o lead não existir/não for da org
+    return selecaoMensagens(c, req.params.id, selecao);
+  });
+  if (!mensagens.length) return res.status(400).json({ erro: 'Sem mensagens nesta seleção' });
+
+  // 2) gera o artefato (ai.tasks mede o custo internamente)
+  let conteudo;
+  if (tipo === 'transcricao') {
+    conteudo = (await ai.transcrever(orgId, mensagens, { limpar: !!limpar })).texto;
+  } else {
+    const contexto = (await ai.transcrever(orgId, mensagens, { limpar: false })).texto;
+    if (tipo === 'resumo') conteudo = await ai.resumir(orgId, contexto);
+    else if (tipo === 'documento') conteudo = await ai.gerarDocumento(orgId, contexto, instrucao);
+    else conteudo = await ai.gerarProposta(orgId, contexto, brief);
+  }
+
+  // 3) persiste como documento + nota no histórico
+  const doc = await comOrg(req, async (c) => {
+    const d = await crm.criarDocumento(c, req.params.id, {
+      tipo, titulo: (titulo || TITULO_PADRAO[tipo]), conteudo,
+      origem: { selecao, instrucao: instrucao || undefined, brief: brief || undefined },
+    }, 'ia');
+    await crm.registrarInteracaoTipo(c, req.params.id, {
+      texto: `Documento gerado por IA: ${d.titulo}`, tipo: 'nota', gerado_por_ia: true, metadata: { doc_id: d.id, tipo },
+    });
+    return d;
+  });
+  res.status(201).json({ documento: doc });
+}));
+
+// =================== PAINEL DO OPERADOR (cross-tenant, somente leitura, auditado) ===================
+const opLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200, message: { erro: 'Muitas requisições.' } });
+app.get('/api/operator/overview', opLimiter, auth.requireAuth, auth.requireOperator, asyncH(async (req, res) => {
+  res.json(await operator.overview(req.principal.id));
+}));
+app.get('/api/operator/orgs', opLimiter, auth.requireAuth, auth.requireOperator, asyncH(async (req, res) => {
+  res.json(await operator.listarOrgs(req.principal.id));
+}));
+app.get('/api/operator/orgs/:id', opLimiter, auth.requireAuth, auth.requireOperator, asyncH(async (req, res) => {
+  res.json(await operator.detalheOrg(req.principal.id, req.params.id));
+}));
+
 // =================== COBRANÇA (pagar.me) ===================
 app.get('/api/billing', auth.requireAuth, asyncH(async (req, res) => {
   const sub = await billing.assinaturaDaOrg(req.principal.org_id);
@@ -296,6 +410,7 @@ async function iniciar() {
 
   await auth.bootstrapInicial();
   await auth.ensureSubscriptions();
+  await auth.ensureOperator().catch((e) => console.error('ensureOperator (boot):', e.message));
   await billingState.verificarVencimentos().catch((e) => console.error('vencimentos (boot):', e.message));
   // agendador leve de vencimentos de trial/carência (sem fila por enquanto)
   setInterval(() => billingState.verificarVencimentos().catch((e) => console.error('vencimentos:', e.message)), 60 * 60 * 1000);

@@ -9,10 +9,13 @@ const MAPA = {
   sentimento: HAIKU,
   triagem: HAIKU,
   extracao_lead: HAIKU,
+  transcricao: HAIKU,
   // equilíbrio qualidade/custo → Sonnet
   resumo: SONNET,
   gordon: SONNET,
   auto_resposta: SONNET,
+  documento: SONNET,
+  proposta: SONNET,
   relatorio: SONNET,
   // raciocínio complexo / escalado → Opus
   raciocinio_complexo: OPUS,

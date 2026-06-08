@@ -9,7 +9,9 @@
     "dev": "node server.js",
     "worker": "node jobs/worker.js",
     "migrate": "node-pg-migrate -m migrations",
-    "verify:rls": "node scripts/verify-rls.js"
+    "verify:rls": "node scripts/verify-rls.js",
+    "verify:ia-lead": "node scripts/verify-ia-lead.js",
+    "verify:operator": "node scripts/verify-operator.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",

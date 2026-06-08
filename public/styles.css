@@ -308,6 +308,38 @@ main { padding: 48px 40px 80px; max-width: 1320px; margin: 0 auto; }
   padding: 2px 7px; border-radius: var(--r-pill); margin-left: 8px;
 }
 
+/* =================== IA & DOCUMENTOS (ficha) =================== */
+.ia-toggle { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; }
+.ia-toggle input { width: auto; }
+.ia-sep { border: none; border-top: 1px solid var(--linha, rgba(0,0,0,0.08)); margin: 14px 0; }
+.ia-acoes { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ia-acoes span { font-size: 13px; color: var(--fg-soft); }
+.btn.pequeno { padding: 4px 10px; font-size: 12px; }
+.ia-docs { margin-top: 16px; }
+.ia-docs h4 { margin: 0 0 8px; }
+.doc-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.06); }
+.doc-item .doc-titulo { flex: 1; }
+.doc-item .doc-acoes { display: flex; gap: 6px; }
+.badge-doc {
+  background: rgba(0,0,0,0.06); color: var(--fg-soft); font-family: var(--font-mono);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: var(--r-pill);
+}
+.doc-conteudo {
+  white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 13px;
+  line-height: 1.55; background: rgba(0,0,0,0.03); padding: 16px; border-radius: 8px; max-height: 50vh; overflow: auto;
+}
+
+/* =================== PAINEL DO OPERADOR =================== */
+.op-cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+.op-card { flex: 1 1 140px; background: var(--bg-card, #fff); border: 1px solid rgba(0,0,0,0.08); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 4px; }
+.op-card.largo { flex-basis: 100%; }
+.op-num { font-size: 26px; font-weight: 700; font-family: var(--font-serif, serif); }
+.op-rot { font-size: 12px; color: var(--fg-soft); text-transform: uppercase; letter-spacing: 0.05em; }
+.op-assin { font-size: 13px; font-family: var(--font-mono); }
+.op-titulo { margin: 8px 0 12px; }
+.op-org { cursor: pointer; }
+
 /* =================== TOAST =================== */
 .toast {
   position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);

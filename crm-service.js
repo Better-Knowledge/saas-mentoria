@@ -146,6 +146,93 @@ async function excluirCliente(client, id) {
   return { ok: true, removido: id };
 }
 
+// ===================== Interações tipadas (reuso interno) =====================
+const TIPOS_INTERACAO = ['nota', 'resumo_ia', 'sentimento', 'mensagem_whatsapp'];
+
+// Registra uma interação com tipo/metadata explícitos (ex.: handoff, mensagem de WhatsApp gerada por IA,
+// nota de "documento gerado"). Mantém o RLS derivando org_id do contexto.
+async function registrarInteracaoTipo(client, id, { texto, tipo = 'nota', gerado_por_ia = false, metadata = null }) {
+  const t = (texto || '').trim();
+  if (!t) throw new ErroDominio('O campo texto e obrigatorio', 400);
+  const tp = TIPOS_INTERACAO.includes(tipo) ? tipo : 'nota';
+  const { rows } = await client.query(`
+    INSERT INTO interacoes (org_id, cliente_id, texto, tipo, gerado_por_ia, metadata)
+    VALUES (current_setting('app.current_org')::uuid, $1, $2, $3, $4, $5) RETURNING *`,
+    [id, t, tp, !!gerado_por_ia, metadata]);
+  await client.query('UPDATE clientes SET updated_at = now() WHERE id = $1', [id]);
+  return rows[0];
+}
+
+// ===================== Documentos de contexto do Lead =====================
+const TIPOS_DOC = ['transcricao', 'resumo', 'documento', 'proposta'];
+
+async function listarDocumentos(client, clienteId) {
+  return (await client.query(
+    `SELECT id, tipo, titulo, gerado_por_ia, created_by, created_at
+     FROM lead_documents WHERE cliente_id = $1 ORDER BY created_at DESC`, [clienteId]
+  )).rows;
+}
+
+async function obterDocumento(client, clienteId, docId) {
+  const { rows } = await client.query(
+    'SELECT * FROM lead_documents WHERE id = $1 AND cliente_id = $2', [docId, clienteId]);
+  if (!rows[0]) throw new ErroDominio('Documento nao encontrado', 404);
+  return rows[0];
+}
+
+async function criarDocumento(client, clienteId, { tipo, titulo, conteudo, origem = null }, autor) {
+  const { rows: ex } = await client.query('SELECT id FROM clientes WHERE id = $1', [clienteId]);
+  if (!ex[0]) throw new ErroDominio('Cliente nao encontrado', 404);
+  if (!TIPOS_DOC.includes(tipo)) throw new ErroDominio('Tipo de documento invalido', 400);
+  const tit = (titulo || '').trim() || tipo;
+  const cont = (conteudo || '').toString();
+  if (!cont.trim()) throw new ErroDominio('O conteudo do documento e obrigatorio', 400);
+  if (cont.length > 100000) throw new ErroDominio('Documento muito longo', 400);
+  const { rows } = await client.query(`
+    INSERT INTO lead_documents (org_id, cliente_id, tipo, titulo, conteudo, gerado_por_ia, origem, created_by)
+    VALUES (current_setting('app.current_org')::uuid, $1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [clienteId, tipo, tit.slice(0, 200), cont, normAutor(autor) === 'ia', origem, normAutor(autor)]);
+  await client.query('UPDATE clientes SET updated_at = now() WHERE id = $1', [clienteId]);
+  return rows[0];
+}
+
+async function excluirDocumento(client, clienteId, docId) {
+  const r = await client.query('DELETE FROM lead_documents WHERE id = $1 AND cliente_id = $2', [docId, clienteId]);
+  if (r.rowCount === 0) throw new ErroDominio('Documento nao encontrado', 404);
+  return { ok: true, removido: docId };
+}
+
+// ===================== Config de IA por Lead =====================
+const AI_CONFIG_BOOL = ['auto_sentimento', 'auto_resposta'];
+const AI_CONFIG_PADRAO = { auto_sentimento: true, auto_resposta: false, persona: '', rate_limite: null };
+
+async function obterAiConfig(client, clienteId) {
+  const { rows } = await client.query('SELECT ai_config FROM clientes WHERE id = $1', [clienteId]);
+  if (!rows[0]) throw new ErroDominio('Cliente nao encontrado', 404);
+  return { ...AI_CONFIG_PADRAO, ...(rows[0].ai_config || {}) };
+}
+
+// Merge defensivo: só aceita chaves conhecidas e valida tipos. Retorna a config resultante.
+async function atualizarAiConfig(client, clienteId, patch = {}) {
+  const limpo = {};
+  for (const k of AI_CONFIG_BOOL) if (k in patch) limpo[k] = !!patch[k];
+  if ('persona' in patch) limpo.persona = String(patch.persona || '').slice(0, 4000);
+  if ('rate_limite' in patch && patch.rate_limite && typeof patch.rate_limite === 'object') {
+    const max = Number(patch.rate_limite.max);
+    const janela = Number(patch.rate_limite.janela_min);
+    limpo.rate_limite = {
+      max: Number.isFinite(max) && max > 0 ? Math.floor(max) : 5,
+      janela_min: Number.isFinite(janela) && janela > 0 ? Math.floor(janela) : 10,
+    };
+  }
+  if (Object.keys(limpo).length === 0) return obterAiConfig(client, clienteId);
+  const { rows } = await client.query(
+    'UPDATE clientes SET ai_config = ai_config || $1::jsonb, updated_at = now() WHERE id = $2 RETURNING ai_config',
+    [JSON.stringify(limpo), clienteId]);
+  if (!rows[0]) throw new ErroDominio('Cliente nao encontrado', 404);
+  return { ...AI_CONFIG_PADRAO, ...(rows[0].ai_config || {}) };
+}
+
 async function acoesHoje(client) {
   const { rows: todas } = await client.query(`
     SELECT id, nome, empresa, etapa, valor_estimado, proxima_acao, proxima_acao_data
@@ -162,7 +249,9 @@ async function acoesHoje(client) {
 }
 
 module.exports = {
-  ETAPAS, RESULTADOS, ErroDominio, montaCliente,
+  ETAPAS, RESULTADOS, TIPOS_DOC, ErroDominio, montaCliente,
   listarClientes, obterCliente, criarCliente, atualizarCliente, moverEtapa,
-  listarInteracoes, registrarInteracao, exportarCliente, excluirCliente, acoesHoje,
+  listarInteracoes, registrarInteracao, registrarInteracaoTipo, exportarCliente, excluirCliente, acoesHoje,
+  listarDocumentos, obterDocumento, criarDocumento, excluirDocumento,
+  obterAiConfig, atualizarAiConfig,
 };

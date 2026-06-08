@@ -1,10 +1,12 @@
 // whatsapp/ingest.js — ingestão de mensagens inbound: normaliza → associa/cria lead → grava
-// mensagem (idempotente) + interação no histórico → dispara IA (sentimento), tudo na org correta.
+// mensagem (idempotente) + interação no histórico → dispara IA CONFORME A CONFIG DO LEAD
+// (sentimento automático e/ou auto-resposta autônoma), tudo na org correta.
 const { withOrg } = require('../db');
 const crm = require('../crm-service');
 const ai = require('../ai/tasks');
 const aiUsage = require('../ai/usage');
 const billing = require('../billing/plans');
+const autoReply = require('./auto-reply');
 const { adapterFor } = require('./provider');
 
 // conn = conexão da org (com creds). payload = corpo do webhook do provider.
@@ -16,7 +18,7 @@ async function ingestInbound(conn, payload) {
 
   const r = await withOrg(orgId, async (c) => {
     // 1) lead pelo telefone (cria se novo — VIP é ilimitado, então não esbarra no limite)
-    let cli = (await c.query('SELECT id, nome FROM clientes WHERE telefone = $1 ORDER BY created_at LIMIT 1', [msg.remetente])).rows[0];
+    let cli = (await c.query('SELECT id, nome, ai_config FROM clientes WHERE telefone = $1 ORDER BY created_at LIMIT 1', [msg.remetente])).rows[0];
     let novo = false;
     if (!cli) {
       cli = await crm.criarCliente(c, { nome: msg.metadata.pushName || msg.remetente, telefone: msg.remetente, origem: 'WhatsApp' }, 'ia');
@@ -36,23 +38,40 @@ async function ingestInbound(conn, payload) {
         VALUES (current_setting('app.current_org')::uuid, $1, $2, 'mensagem_whatsapp', false, $3)`,
         [cli.id, msg.conteudo, { de: msg.remetente }]);
     }
-    return { clienteId: cli.id, novo, conteudo: msg.conteudo };
+    return { clienteId: cli.id, novo, conteudo: msg.conteudo, aiConfig: cli.ai_config || {} };
   });
 
   if (r.duplicada) return { duplicada: true };
 
-  // 4) IA: sentimento (Haiku) — só VIP e dentro do orçamento de IA da org
-  const sub = await billing.assinaturaDaOrg(orgId);
-  const ents = billing.entitlements(sub);
-  if (ents.features.whatsapp_ia && r.conteudo && (await aiUsage.dentroDoOrcamento(orgId, ents.features))) {
+  // 4) IA por Lead — só VIP e dentro do orçamento de IA da org. O QUE roda depende da config do Lead.
+  const ents = billing.entitlements(await billing.assinaturaDaOrg(orgId));
+  if (!(ents.features.whatsapp_ia && r.conteudo && (await aiUsage.dentroDoOrcamento(orgId, ents.features)))) {
+    return { ok: true, clienteId: r.clienteId, novoLead: r.novo };
+  }
+  const cfg = r.aiConfig || {};
+
+  // 4a) Sentimento automático (Haiku), só se ligado para ESTE lead.
+  let sentimento = null;
+  if (cfg.auto_sentimento) {
     try {
-      const sentimento = await ai.sentimento(orgId, r.conteudo);
+      sentimento = await ai.sentimento(orgId, r.conteudo);
       await withOrg(orgId, (c) => c.query(`
         INSERT INTO interacoes (org_id, cliente_id, texto, tipo, gerado_por_ia, metadata)
         VALUES (current_setting('app.current_org')::uuid, $1, $2, 'sentimento', true, $3)`,
         [r.clienteId, `Sentimento do lead: ${sentimento}`, { sentimento, fonte: 'whatsapp' }]));
     } catch (e) { console.error('IA sentimento (whatsapp):', e.message); }
   }
+
+  // 4b) Auto-resposta autônoma (opt-in por lead) — reusa o sentimento já calculado se houver.
+  if (cfg.auto_resposta) {
+    try {
+      await autoReply.responder(conn, {
+        clienteId: r.clienteId, telefone: msg.remetente, inbound: r.conteudo,
+        aiConfig: cfg, sentimentoPrecalc: sentimento,
+      });
+    } catch (e) { console.error('auto-resposta (whatsapp):', e.message); }
+  }
+
   return { ok: true, clienteId: r.clienteId, novoLead: r.novo };
 }
 
