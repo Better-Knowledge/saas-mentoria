@@ -1,117 +1,176 @@
-// auth.js — autenticação em dois planos:
-//   A) Pessoas (UI): login com e-mail + senha → sessão em cookie httpOnly + CSRF
-//   B) Máquinas (IA): API keys próprias, revogáveis, via Authorization: Bearer
+// auth.js — autenticação multi-tenant em dois planos:
+//   A) Pessoas (UI): login/signup → sessão em cookie httpOnly + CSRF, com ORGANIZAÇÃO ATIVA.
+//   B) Máquinas (IA): API keys próprias da organização, revogáveis, via Authorization: Bearer.
+// PostgreSQL: tabelas de plataforma/auth (usuarios, organizations, memberships, sessoes, api_keys)
+// não usam RLS; a chave Bearer carrega o org_id que escopa o agente àquela organização.
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const db = require('./db');
+const { pool, withoutOrg } = require('./db');
 
 const COOKIE_NOME = 'crm_sessao';
 const DIAS_SESSAO = 7;
 const ehProducao = process.env.NODE_ENV === 'production';
 
-// ---------- helpers de senha ----------
+// ---------- helpers de senha / gerais ----------
 function hashSenha(senha) { return bcrypt.hashSync(senha, 12); }
 function verificarSenha(senha, hash) { return bcrypt.compareSync(senha, hash); }
-
-// ---------- helpers gerais ----------
 function tokenAleatorio(bytes = 32) { return crypto.randomBytes(bytes).toString('hex'); }
 function sha256(s) { return crypto.createHash('sha256').update(s).digest('hex'); }
-// comparação em tempo constante (evita timing attack)
 function igualSeguro(a, b) {
   const ba = Buffer.from(String(a)); const bb = Buffer.from(String(b));
   if (ba.length !== bb.length) return false;
   return crypto.timingSafeEqual(ba, bb);
 }
+function erro(msg, status) { const e = new Error(msg); e.status = status; return e; }
 
 // ---------- usuários ----------
-function criarUsuario({ nome, email, senha, papel = 'admin' }) {
-  const info = db.prepare(
-    'INSERT INTO usuarios (nome, email, senha_hash, papel) VALUES (?, ?, ?, ?)'
-  ).run(nome, email.toLowerCase().trim(), hashSenha(senha), papel);
-  return db.prepare('SELECT id, nome, email, papel FROM usuarios WHERE id = ?').get(info.lastInsertRowid);
+async function buscarUsuarioPorEmail(email) {
+  const { rows } = await pool.query(
+    'SELECT * FROM usuarios WHERE email = $1', [(email || '').toLowerCase().trim()]
+  );
+  return rows[0] || null;
 }
-function buscarUsuarioPorEmail(email) {
-  return db.prepare('SELECT * FROM usuarios WHERE email = ?').get((email || '').toLowerCase().trim());
-}
-function contarUsuarios() { return db.prepare('SELECT COUNT(*) n FROM usuarios').get().n; }
 
-// ---------- sessões ----------
-function criarSessao(usuarioId) {
+// ---------- signup: cria usuário + organização + membership(owner) ----------
+async function signup({ nome, email, senha, nomeOrg }) {
+  const em = (email || '').toLowerCase().trim();
+  if (!nome || !em || !senha) throw erro('Preencha nome, e-mail e senha', 400);
+  return withoutOrg(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const { rows: ex } = await client.query('SELECT id FROM usuarios WHERE email = $1', [em]);
+      if (ex[0]) throw erro('E-mail já cadastrado', 409);
+      const usuario = (await client.query(
+        'INSERT INTO usuarios (nome, email, senha_hash) VALUES ($1,$2,$3) RETURNING id, nome, email',
+        [String(nome).trim(), em, hashSenha(senha)]
+      )).rows[0];
+      const org = (await client.query(
+        'INSERT INTO organizations (nome) VALUES ($1) RETURNING id, nome',
+        [String(nomeOrg || nome || 'Minha empresa').trim()]
+      )).rows[0];
+      await client.query(
+        "INSERT INTO memberships (usuario_id, org_id, papel) VALUES ($1,$2,'owner')",
+        [usuario.id, org.id]
+      );
+      // Assinatura inicial: trial de 14 dias no plano Básico (sem cobrança até o fim do trial).
+      const trialDias = Number(process.env.TRIAL_DIAS || 14);
+      await client.query(`
+        INSERT INTO subscriptions (org_id, plan_id, status, trial_end)
+        VALUES ($1, (SELECT id FROM plans WHERE codigo = 'basico'), 'trialing', now() + ($2 || ' days')::interval)`,
+        [org.id, String(trialDias)]);
+      await client.query('COMMIT');
+      return { usuario, org };
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    }
+  });
+}
+
+// organizações de um usuário (com o papel em cada uma)
+async function orgsDoUsuario(usuarioId) {
+  const { rows } = await pool.query(`
+    SELECT o.id, o.nome, m.papel
+    FROM memberships m JOIN organizations o ON o.id = m.org_id
+    WHERE m.usuario_id = $1 ORDER BY m.created_at ASC`, [usuarioId]);
+  return rows;
+}
+
+// ---------- sessões (com organização ativa) ----------
+async function criarSessao(usuarioId, orgId) {
   const token = tokenAleatorio();
   const csrf = tokenAleatorio(24);
   const expira = new Date(Date.now() + DIAS_SESSAO * 864e5).toISOString();
-  db.prepare('INSERT INTO sessoes (token, usuario_id, csrf, expira_em) VALUES (?, ?, ?, ?)')
-    .run(token, usuarioId, csrf, expira);
+  await pool.query(
+    'INSERT INTO sessoes (token, usuario_id, org_ativa, csrf, expira_em) VALUES ($1,$2,$3,$4,$5)',
+    [token, usuarioId, orgId || null, csrf, expira]
+  );
   return { token, csrf };
 }
-function obterSessao(token) {
+async function obterSessao(token) {
   if (!token) return null;
-  const s = db.prepare(`
-    SELECT s.token, s.usuario_id, s.csrf, s.expira_em, u.nome, u.email, u.papel
-    FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id
-    WHERE s.token = ?
-  `).get(token);
+  const { rows } = await pool.query(`
+    SELECT s.token, s.usuario_id, s.csrf, s.expira_em, s.org_ativa,
+           u.nome, u.email, u.is_operator, m.papel
+    FROM sessoes s
+    JOIN usuarios u ON u.id = s.usuario_id
+    LEFT JOIN memberships m ON m.usuario_id = s.usuario_id AND m.org_id = s.org_ativa
+    WHERE s.token = $1`, [token]);
+  const s = rows[0];
   if (!s) return null;
-  if (new Date(s.expira_em) < new Date()) { destruirSessao(token); return null; }
+  if (new Date(s.expira_em) < new Date()) { await destruirSessao(token); return null; }
   return s;
 }
-function destruirSessao(token) { db.prepare('DELETE FROM sessoes WHERE token = ?').run(token); }
+async function destruirSessao(token) { await pool.query('DELETE FROM sessoes WHERE token = $1', [token]); }
+async function trocarOrgAtiva(token, orgId) {
+  await pool.query('UPDATE sessoes SET org_ativa = $1 WHERE token = $2', [orgId, token]);
+}
 
 function setCookieSessao(res, token) {
   res.cookie(COOKIE_NOME, token, {
-    httpOnly: true,
-    secure: ehProducao,            // exige HTTPS em produção
-    sameSite: 'lax',
-    maxAge: DIAS_SESSAO * 864e5,
-    path: '/',
+    httpOnly: true, secure: ehProducao, sameSite: 'lax', maxAge: DIAS_SESSAO * 864e5, path: '/',
   });
 }
 function limparCookieSessao(res) { res.clearCookie(COOKIE_NOME, { path: '/' }); }
 
-// ---------- API keys ----------
-function criarApiKey({ nome, criadaPor }) {
+// ---------- API keys (escopadas à organização) ----------
+async function criarApiKey({ nome, orgId, criadaPor }) {
   const segredo = 'crm_' + tokenAleatorio(24);     // mostrada UMA vez
   const prefixo = segredo.slice(0, 12);
-  const info = db.prepare(
-    'INSERT INTO api_keys (nome, prefixo, key_hash, criada_por) VALUES (?, ?, ?, ?)'
-  ).run(nome, prefixo, sha256(segredo), criadaPor || null);
-  return { id: info.lastInsertRowid, nome, prefixo, chave: segredo };
+  const { rows } = await pool.query(
+    'INSERT INTO api_keys (org_id, nome, prefixo, key_hash, criada_por) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+    [orgId, nome, prefixo, sha256(segredo), criadaPor || null]
+  );
+  return { id: rows[0].id, nome, prefixo, chave: segredo };
 }
-function listarApiKeys() {
-  return db.prepare(
-    'SELECT id, nome, prefixo, ativa, ultimo_uso, created_at FROM api_keys ORDER BY created_at DESC'
-  ).all();
+async function listarApiKeys(orgId) {
+  return (await pool.query(
+    'SELECT id, nome, prefixo, ativa, ultimo_uso, created_at FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC',
+    [orgId]
+  )).rows;
 }
-function revogarApiKey(id) { return db.prepare('UPDATE api_keys SET ativa = 0 WHERE id = ?').run(id).changes; }
-function verificarApiKey(chave) {
+async function revogarApiKey(orgId, id) {
+  return (await pool.query(
+    'UPDATE api_keys SET ativa = false WHERE id = $1 AND org_id = $2', [id, orgId]
+  )).rowCount;
+}
+// Lookup global por key_hash (a credencial é a fonte de verdade da org → carrega o org_id adiante).
+async function verificarApiKey(chave) {
   if (!chave) return null;
-  const k = db.prepare('SELECT * FROM api_keys WHERE key_hash = ? AND ativa = 1').get(sha256(chave));
+  const { rows } = await pool.query(
+    'SELECT id, nome, org_id FROM api_keys WHERE key_hash = $1 AND ativa = true', [sha256(chave)]
+  );
+  const k = rows[0];
   if (!k) return null;
-  db.prepare("UPDATE api_keys SET ultimo_uso = datetime('now','localtime') WHERE id = ?").run(k.id);
+  await pool.query('UPDATE api_keys SET ultimo_uso = now() WHERE id = $1', [k.id]);
   return k;
 }
 
 // ---------- middlewares ----------
-// Aceita sessão (pessoa) OU API key (máquina). Sem isso → 401.
-function requireAuth(req, res, next) {
-  const header = req.headers['authorization'] || '';
-  if (header.startsWith('Bearer ')) {
-    const k = verificarApiKey(header.slice(7));
-    if (!k) return res.status(401).json({ erro: 'Chave de API inválida ou revogada' });
-    req.principal = { tipo: 'ia', credencial: 'apikey', id: k.id, nome: k.nome };
-    return next();
-  }
-  const s = obterSessao(req.cookies && req.cookies[COOKIE_NOME]);
-  if (s) {
-    req.principal = { tipo: 'humano', credencial: 'sessao', id: s.usuario_id,
-      nome: s.nome, papel: s.papel, csrf: s.csrf };
-    return next();
-  }
-  return res.status(401).json({ erro: 'Não autenticado' });
+// Aceita sessão (pessoa) OU API key (máquina). Ambos resolvem org_id. Sem isso → 401.
+async function requireAuth(req, res, next) {
+  try {
+    const header = req.headers['authorization'] || '';
+    if (header.startsWith('Bearer ')) {
+      const k = await verificarApiKey(header.slice(7));
+      if (!k) return res.status(401).json({ erro: 'Chave de API inválida ou revogada' });
+      req.principal = { tipo: 'ia', credencial: 'apikey', id: k.id, nome: k.nome, org_id: k.org_id };
+      return next();
+    }
+    const s = await obterSessao(req.cookies && req.cookies[COOKIE_NOME]);
+    if (s) {
+      if (!s.org_ativa) return res.status(403).json({ erro: 'Sem organização ativa' });
+      req.principal = {
+        tipo: 'humano', credencial: 'sessao', id: s.usuario_id, nome: s.nome,
+        papel: s.papel, org_id: s.org_ativa, csrf: s.csrf, operador: !!s.is_operator,
+      };
+      return next();
+    }
+    return res.status(401).json({ erro: 'Não autenticado' });
+  } catch (e) { next(e); }
 }
 
-// Para escritas vindas do navegador (sessão), exige o token CSRF no header.
-// Requisições por API key não usam cookie → não são alvo de CSRF.
+// CSRF nas escritas de sessão (API key não usa cookie → não é alvo).
 function csrfProtect(req, res, next) {
   if (req.principal && req.principal.credencial === 'sessao') {
     const enviado = req.headers['x-csrf-token'];
@@ -122,63 +181,84 @@ function csrfProtect(req, res, next) {
   next();
 }
 
-// Restringe a administradores (pessoas com papel admin).
+// Restringe a quem administra a organização (owner/admin via sessão).
 function requireAdmin(req, res, next) {
-  if (!req.principal || req.principal.credencial !== 'sessao' || req.principal.papel !== 'admin') {
-    return res.status(403).json({ erro: 'Apenas administradores' });
+  if (!req.principal || req.principal.credencial !== 'sessao'
+      || !['owner', 'admin'].includes(req.principal.papel)) {
+    return res.status(403).json({ erro: 'Apenas administradores da organização' });
   }
   next();
 }
 
-// ---------- autenticação do servidor MCP (plano de máquina) ----------
-// Resolução de credencial isolada atrás de uma única função: hoje só valida API keys Bearer;
-// no futuro um validador de tokens OAuth do MCP pode ser plugado aqui sem quebrar as chaves já
-// emitidas — ambos os caminhos produzem o mesmo `principal`.
-function resolverPrincipal(req) {
+// Restringe ao OPERADOR de plataforma (papel global, via sessão). Para o painel cross-tenant.
+function requireOperator(req, res, next) {
+  if (!req.principal || req.principal.credencial !== 'sessao' || !req.principal.operador) {
+    return res.status(403).json({ erro: 'Acesso restrito ao operador da plataforma' });
+  }
+  next();
+}
+
+// Resolução de credencial do MCP (isolada para no futuro plugar OAuth sem quebrar as chaves).
+async function resolverPrincipal(req) {
   const header = req.headers['authorization'] || '';
   if (header.startsWith('Bearer ')) {
-    const k = verificarApiKey(header.slice(7));
-    if (k) return { tipo: 'ia', credencial: 'apikey', id: k.id, nome: k.nome };
+    const k = await verificarApiKey(header.slice(7));
+    if (k) return { tipo: 'ia', credencial: 'apikey', id: k.id, nome: k.nome, org_id: k.org_id };
   }
   return null;
 }
-
-// Exige Bearer válido para o endpoint MCP. Sem credencial válida → 401 (nunca anônimo).
-function requireBearer(req, res, next) {
-  const header = req.headers['authorization'] || '';
-  if (!header.startsWith('Bearer ')) {
-    return res.status(401).json({ erro: 'Não autenticado' });
-  }
-  const principal = resolverPrincipal(req);
-  if (!principal) {
-    return res.status(401).json({ erro: 'Chave de API inválida ou revogada' });
-  }
-  req.principal = principal;
-  next();
+// Exige Bearer válido para o /mcp. Sem credencial válida → 401 (nunca anônimo).
+async function requireBearer(req, res, next) {
+  try {
+    const header = req.headers['authorization'] || '';
+    if (!header.startsWith('Bearer ')) return res.status(401).json({ erro: 'Não autenticado' });
+    const principal = await resolverPrincipal(req);
+    if (!principal) return res.status(401).json({ erro: 'Chave de API inválida ou revogada' });
+    req.principal = principal;
+    next();
+  } catch (e) { next(e); }
 }
 
-// Cria o primeiro admin se não houver nenhum usuário.
-function bootstrapAdmin() {
-  if (contarUsuarios() > 0) return;
-  const email = process.env.ADMIN_EMAIL || 'admin@crm.local';
+// Cria a organização inicial + admin (owner) a partir do .env, se ainda não houver organização.
+async function bootstrapInicial() {
+  const n = (await pool.query('SELECT COUNT(*)::int AS n FROM organizations')).rows[0].n;
+  if (n > 0) return;
+  const email = (process.env.ADMIN_EMAIL || 'admin@saas.local').toLowerCase().trim();
   const senha = process.env.ADMIN_SENHA || 'mudar123';
-  criarUsuario({ nome: 'Administrador', email, senha, papel: 'admin' });
+  const nomeOrg = process.env.ADMIN_ORG || 'Minha empresa';
+  await signup({ nome: 'Administrador', email, senha, nomeOrg });
   console.log('========================================================');
-  console.log(' Usuário admin criado:');
+  console.log(' Organização inicial + admin (owner) criados:');
   console.log('   e-mail: ' + email);
-  if (!process.env.ADMIN_SENHA) {
-    console.log('   senha:  ' + senha + '   <-- TROQUE! defina ADMIN_SENHA no .env');
-  } else {
-    console.log('   senha:  (definida em ADMIN_SENHA)');
-  }
+  console.log('   org:    ' + nomeOrg);
+  if (!process.env.ADMIN_SENHA) console.log('   senha:  ' + senha + '   <-- TROQUE! defina ADMIN_SENHA no .env');
   console.log('========================================================');
+}
+
+// Marca o operador de plataforma a partir do .env (OPERATOR_EMAIL, ou ADMIN_EMAIL como padrão).
+// Idempotente; só promove um e-mail já existente. Sem operador definido, o painel fica inacessível.
+async function ensureOperator() {
+  const email = (process.env.OPERATOR_EMAIL || process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+  if (!email) return;
+  const r = await pool.query('UPDATE usuarios SET is_operator = true WHERE lower(email) = $1 AND is_operator = false', [email]);
+  if (r.rowCount > 0) console.log(`Operador de plataforma definido: ${email}`);
+}
+
+// Backfill: garante que toda organização tenha uma assinatura (trial Básico p/ orgs sem assinatura).
+async function ensureSubscriptions() {
+  const trialDias = Number(process.env.TRIAL_DIAS || 14);
+  await pool.query(`
+    INSERT INTO subscriptions (org_id, plan_id, status, trial_end)
+    SELECT o.id, (SELECT id FROM plans WHERE codigo = 'basico'), 'trialing', now() + ($1 || ' days')::interval
+    FROM organizations o
+    WHERE NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.org_id = o.id)`, [String(trialDias)]);
 }
 
 module.exports = {
   COOKIE_NOME, verificarSenha,
-  criarUsuario, buscarUsuarioPorEmail, contarUsuarios,
-  criarSessao, obterSessao, destruirSessao, setCookieSessao, limparCookieSessao,
-  criarApiKey, listarApiKeys, revogarApiKey,
-  requireAuth, csrfProtect, requireAdmin, bootstrapAdmin,
-  resolverPrincipal, requireBearer,
+  buscarUsuarioPorEmail, signup, orgsDoUsuario,
+  criarSessao, obterSessao, destruirSessao, trocarOrgAtiva, setCookieSessao, limparCookieSessao,
+  criarApiKey, listarApiKeys, revogarApiKey, verificarApiKey,
+  requireAuth, csrfProtect, requireAdmin, requireOperator, resolverPrincipal, requireBearer,
+  bootstrapInicial, ensureSubscriptions, ensureOperator,
 };

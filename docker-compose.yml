@@ -1,25 +1,79 @@
-# /opt/docker-services/crm-mentoria/docker-compose.yml
+# /opt/docker-services/saas-mentoria/docker-compose.yml
+# SaaS multi-tenant: app (web/API/MCP) + worker (fila pg-boss) + PostgreSQL + Evolution (WhatsApp).
+# Webhooks (pagar.me, WhatsApp) chegam pelo MESMO host do app — a rota /webhooks/* já é coberta
+# pelo router Host(...) existente; nada extra no Traefik. Postgres/Evolution ficam só na rede interna.
 services:
   app:
     build: .
-    container_name: crm-mentoria
+    container_name: saas-mentoria
     restart: unless-stopped
     env_file:
       - ./.env
+    depends_on:
+      - postgres
     networks:
       - web
+      - internal
     volumes:
-      - ./data:/app/data   # persiste o SQLite (crm.db + WAL)
+      - ./data:/app/data   # SQLite legado (durante a transição; removido no cutover, T048)
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.crm-mentoria.entrypoints=websecure"
-      - "traefik.http.routers.crm-mentoria.rule=Host(`mentoria.crm.better-knowledge.com`)"
-      - "traefik.http.routers.crm-mentoria.service=crm-mentoria"
-      - "traefik.http.routers.crm-mentoria.tls.certresolver=letsencrypt"
-      - "traefik.http.services.crm-mentoria.loadbalancer.server.port=3000"
-      - "traefik.http.routers.crm-mentoria.middlewares=secure-headers@file"
+      - "traefik.http.routers.saas-mentoria.entrypoints=websecure"
+      - "traefik.http.routers.saas-mentoria.rule=Host(`mentoria.saas.better-knowledge.com`)"
+      - "traefik.http.routers.saas-mentoria.service=saas-mentoria"
+      - "traefik.http.routers.saas-mentoria.tls.certresolver=letsencrypt"
+      - "traefik.http.services.saas-mentoria.loadbalancer.server.port=3000"
+      - "traefik.http.routers.saas-mentoria.middlewares=secure-headers@file"
       - "traefik.docker.network=web"
+
+  # Worker da fila (pg-boss): ingestão de WhatsApp, jobs de IA, cobrança, reconciliação.
+  worker:
+    build: .
+    container_name: saas-mentoria-worker
+    restart: unless-stopped
+    command: ["node", "jobs/worker.js"]
+    env_file:
+      - ./.env
+    depends_on:
+      - postgres
+    networks:
+      - internal
+
+  # PostgreSQL (multi-tenant + RLS). Não exposto ao Traefik (só rede interna).
+  # A aplicação conecta como um papel de LOGIN sujeito a RLS (sem BYPASSRLS), provisionado no
+  # deploy (T050); este POSTGRES_PASSWORD é do superuser, usado só para migrações/admin.
+  postgres:
+    image: postgres:16
+    container_name: saas-mentoria-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-troque}
+      POSTGRES_DB: saas
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+
+  # Evolution API — provider de WhatsApp inicial. Imagem/tag e backing store (DB/Redis)
+  # confirmados no deploy (T050). O app fala com ela via EVOLUTION_URL=http://evolution:8080.
+  evolution:
+    image: atendai/evolution-api:latest
+    container_name: saas-mentoria-evolution
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      - internal
 
 networks:
   web:
     external: true
+  internal:
+    driver: bridge
+
+volumes:
+  pgdata:
+  evolution_instances:

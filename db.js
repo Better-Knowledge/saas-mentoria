@@ -1,88 +1,47 @@
-// db.js — conexao com o SQLite e criacao das tabelas (schema)
-const path = require('path');
-const fs = require('fs');
-const Database = require('better-sqlite3');
+// db.js — camada PostgreSQL multi-tenant (substitui o SQLite da v1).
+//
+// A aplicação conecta com um papel SEM BYPASSRLS; o isolamento entre organizações é imposto no
+// BANCO por Row-Level Security (Princípio V). Toda operação de dados de tenant DEVE rodar dentro
+// de withOrg(), que aplica `SET LOCAL app.current_org` na transação — sem esse contexto o RLS nega
+// (leitura vazia, escrita recusada). O schema vive em migrations/ (node-pg-migrate), não aqui.
+const { Pool } = require('pg');
 
-// Diretorio de dados (persistencia). Em Docker apontamos para um volume
-// via DATA_DIR; localmente cai no proprio diretorio do projeto.
-const DATA_DIR = process.env.DATA_DIR || __dirname;
-fs.mkdirSync(DATA_DIR, { recursive: true });
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+pool.on('error', (e) => console.error('Erro inesperado no pool PG:', e.message));
 
-const db = new Database(path.join(DATA_DIR, 'crm.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+// Executa fn(client) numa transação com o contexto da organização aplicado.
+// set_config(..., true) = SET LOCAL: vale só nesta transação (seguro com o pool).
+async function withOrg(orgId, fn) {
+  if (!orgId) throw new Error('withOrg exige um org_id');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('app.current_org', $1, true)", [String(orgId)]);
+    const out = await fn(client);
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
-// Tabela de clientes / negocios.
-// etapa: novo | qualificacao | reuniao | proposta
-// resultado: em_aberto | ganho | perdido
-// tipo_cliente: b2b | autonomo | publico
-// created_by: humano | ia  (auditoria LGPD)
-db.exec(`
-CREATE TABLE IF NOT EXISTS clientes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  nome TEXT NOT NULL,
-  empresa TEXT,
-  cargo TEXT,
-  telefone TEXT,
-  email TEXT,
-  tipo_cliente TEXT DEFAULT 'b2b',
-  origem TEXT,
-  etapa TEXT NOT NULL DEFAULT 'novo',
-  resultado TEXT NOT NULL DEFAULT 'em_aberto',
-  valor_estimado REAL DEFAULT 0,
-  proposta_enviada INTEGER DEFAULT 0,
-  status_pagamento TEXT,
-  proxima_acao TEXT,
-  proxima_acao_data TEXT,
-  created_by TEXT DEFAULT 'humano',
-  created_at TEXT DEFAULT (datetime('now','localtime')),
-  updated_at TEXT DEFAULT (datetime('now','localtime'))
-);
+// Para signup, login, chaves e webhooks (antes de resolver a org) e o operador: consultas
+// explícitas, sem contexto de tenant. NUNCA usar para ler/escrever dados de uma organização.
+async function withoutOrg(fn) {
+  const client = await pool.connect();
+  try {
+    return await fn(client);
+  } finally {
+    client.release();
+  }
+}
 
-CREATE TABLE IF NOT EXISTS interacoes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  cliente_id INTEGER NOT NULL,
-  texto TEXT NOT NULL,
-  gerado_por_ia INTEGER DEFAULT 0,
-  data TEXT DEFAULT (datetime('now','localtime')),
-  created_at TEXT DEFAULT (datetime('now','localtime')),
-  FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE CASCADE
-);
+// Atalho para uma query única em tabela de plataforma/auth (sem contexto de tenant).
+function query(text, params) {
+  return pool.query(text, params);
+}
 
--- ===== AUTENTICAÇÃO =====
-
--- Pessoas que usam a interface
-CREATE TABLE IF NOT EXISTS usuarios (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  nome TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE,
-  senha_hash TEXT NOT NULL,
-  papel TEXT NOT NULL DEFAULT 'admin',          -- admin | assistente
-  created_at TEXT DEFAULT (datetime('now','localtime'))
-);
-
--- Sessões de login (cookie httpOnly aponta para um token aqui)
-CREATE TABLE IF NOT EXISTS sessoes (
-  token TEXT PRIMARY KEY,
-  usuario_id INTEGER NOT NULL,
-  csrf TEXT NOT NULL,
-  expira_em TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now','localtime')),
-  FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
-);
-
--- Chaves de API para automações/IA (uma por integração, revogável)
-CREATE TABLE IF NOT EXISTS api_keys (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  nome TEXT NOT NULL,                            -- rótulo da integração
-  prefixo TEXT NOT NULL,                         -- parte visível p/ identificar
-  key_hash TEXT NOT NULL,                        -- só o hash é guardado
-  ativa INTEGER NOT NULL DEFAULT 1,
-  ultimo_uso TEXT,
-  created_at TEXT DEFAULT (datetime('now','localtime')),
-  criada_por INTEGER,
-  FOREIGN KEY (criada_por) REFERENCES usuarios(id) ON DELETE SET NULL
-);
-`);
-
-module.exports = db;
+module.exports = { pool, withOrg, withoutOrg, query };

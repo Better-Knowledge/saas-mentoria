@@ -13,6 +13,8 @@ const TIPOS = { b2b: 'Empresa (B2B)', autonomo: 'Autônomo', publico: 'Setor pú
 // envia sozinho); guardamos só o token CSRF em memória para as escritas.
 let USUARIO = null;
 let CSRF = null;
+let ENT = null; // entitlements do plano (features) — define o que a UI de IA mostra
+let OPERADOR = false; // operador de plataforma — habilita o painel cross-tenant
 
 // ---- Helpers de rede ----
 async function api(metodo, url, corpo) {
@@ -66,6 +68,7 @@ document.querySelectorAll('.aba').forEach(aba => {
     if (tela === 'hoje') carregarHoje();
     if (tela === 'funil') carregarFunil();
     if (tela === 'clientes') carregarClientes();
+    if (tela === 'operador') carregarOperador();
   });
 });
 
@@ -110,7 +113,7 @@ function renderListaHoje(elId, itens, vazioMsg) {
   const el = document.getElementById(elId);
   if (!itens.length) { el.innerHTML = `<div class="vazio">${vazioMsg}</div>`; return; }
   el.innerHTML = itens.map(c => `
-    <div class="item" onclick="abrirFicha(${c.id})">
+    <div class="item" onclick="abrirFicha('${c.id}')">
       <div class="info">
         <b>${esc(c.nome)}</b>
         <small>${esc(c.empresa || '')} ${c.valor_estimado ? '· ' + fmtMoeda(c.valor_estimado) : ''}</small>
@@ -142,7 +145,7 @@ function cartaoHTML(c) {
   return `
     <div class="cartao" draggable="true" data-id="${c.id}"
          ondragstart="iniciarArraste(event)" ondragend="fimArraste(event)"
-         onclick="abrirFicha(${c.id})">
+         onclick="abrirFicha('${c.id}')">
       <b>${esc(c.nome)}</b>
       <small>${esc(c.empresa || '')}</small>
       ${c.valor_estimado ? `<div class="valor">${fmtMoeda(c.valor_estimado)}</div>` : ''}
@@ -185,7 +188,7 @@ function renderClientes(lista) {
   el.innerHTML = lista.map(c => {
     const etapa = ETAPAS.find(e => e.id === c.etapa);
     return `
-    <div class="item" onclick="abrirFicha(${c.id})">
+    <div class="item" onclick="abrirFicha('${c.id}')">
       <div class="info">
         <b>${esc(c.nome)}</b>
         <small>${esc(c.empresa || '')} · ${etapa ? etapa.nome : c.etapa} · ${c.total_interacoes} interações</small>
@@ -231,21 +234,132 @@ async function abrirFicha(id) {
       <div class="dado"><span>${esc(c.proxima_acao || 'Nenhuma definida')}</span> ${c.proxima_acao_data ? '— ' + fmtData(c.proxima_acao_data) : ''}</div>
     </div>
 
+    <div class="ficha-secao" id="secao-ia">
+      <h3>IA &amp; Documentos</h3>
+      <div id="ia-area"><div class="vazio">Carregando…</div></div>
+    </div>
+
     <div class="ficha-secao">
       <h3>Histórico de interações</h3>
       <div class="campo">
         <textarea id="novaInteracao" placeholder="Anote uma conversa, reunião ou observação..."></textarea>
       </div>
-      <button class="btn primario" onclick="salvarInteracao(${c.id})">+ Adicionar anotação</button>
+      <button class="btn primario" onclick="salvarInteracao('${c.id}')">+ Adicionar anotação</button>
       <div style="margin-top:14px">${interacoes}</div>
     </div>
 
     <div class="acoes-modal">
-      <button class="btn primario" onclick="abrirFormulario(${c.id})">Editar</button>
-      <button class="btn" onclick="exportarCliente(${c.id})">Exportar dados (LGPD)</button>
-      <button class="btn perigo" onclick="excluirCliente(${c.id})">Excluir (LGPD)</button>
+      <button class="btn primario" onclick="abrirFormulario('${c.id}')">Editar</button>
+      <button class="btn" onclick="exportarCliente('${c.id}')">Exportar dados (LGPD)</button>
+      <button class="btn perigo" onclick="excluirCliente('${c.id}')">Excluir (LGPD)</button>
     </div>
   `);
+  carregarSecaoIA(c.id);
+}
+
+// =================== IA & DOCUMENTOS (na ficha) ===================
+async function carregarSecaoIA(id) {
+  const area = document.getElementById('ia-area');
+  if (!area) return;
+  const vip = !!(ENT && ENT.features && ENT.features.whatsapp_ia);
+  let cfg = {}, docs = [];
+  try { cfg = await api('GET', `/api/clientes/${id}/ai-config`); } catch (_) { cfg = {}; }
+  try { docs = await api('GET', `/api/clientes/${id}/documentos`); } catch (_) { docs = []; }
+
+  const toggles = `
+    <label class="ia-toggle"><input type="checkbox" id="cfg_auto_sentimento" ${cfg.auto_sentimento ? 'checked' : ''}
+      onchange="salvarAiConfig('${id}')"> Análise de sentimento automática</label>
+    <label class="ia-toggle"><input type="checkbox" id="cfg_auto_resposta" ${cfg.auto_resposta ? 'checked' : ''}
+      ${vip ? '' : 'disabled'} onchange="salvarAiConfig('${id}')"> Responder sozinho (auto-resposta)${vip ? '' : ' — requer plano VIP'}</label>
+    <div class="campo"><label>Persona / diretrizes da IA</label>
+      <textarea id="cfg_persona" placeholder="Ex.: Tom acolhedor; ofereça uma call de diagnóstico gratuita...">${esc(cfg.persona || '')}</textarea></div>
+    <button class="btn" onclick="salvarAiConfig('${id}')">Salvar configuração</button>`;
+
+  const acoes = vip ? `
+    <div class="ia-acoes">
+      <span>Usar as últimas <input type="number" id="ia_n" value="20" min="1" max="200" style="width:64px"> mensagens:</span>
+      <button class="btn" onclick="gerarArtefatoIA('${id}','transcricao')">Transcrever</button>
+      <button class="btn" onclick="gerarArtefatoIA('${id}','resumo')">Resumir</button>
+      <button class="btn" onclick="gerarArtefatoIA('${id}','documento')">Gerar documento</button>
+      <button class="btn" onclick="gerarArtefatoIA('${id}','proposta')">Gerar proposta</button>
+    </div>` : '<div class="vazio">As ações de IA sobre a conversa exigem o plano VIP.</div>';
+
+  const lista = (docs && docs.length) ? docs.map(d => `
+    <div class="doc-item">
+      <span class="badge-doc">${esc(d.tipo)}</span>
+      <span class="doc-titulo">${esc(d.titulo)}</span>
+      ${d.gerado_por_ia ? '<span class="badge-ia">IA</span>' : ''}
+      <span class="doc-acoes">
+        <button class="btn pequeno" onclick="verDocumento('${id}','${d.id}')">Ver</button>
+        <button class="btn pequeno perigo" onclick="excluirDocumento('${id}','${d.id}')">Excluir</button>
+      </span>
+    </div>`).join('') : '<div class="vazio">Nenhum documento ainda.</div>';
+
+  area.innerHTML = `${toggles}<hr class="ia-sep">${acoes}<div class="ia-docs"><h4>Documentos do lead</h4>${lista}</div>`;
+}
+
+async function salvarAiConfig(id) {
+  const patch = {
+    auto_sentimento: document.getElementById('cfg_auto_sentimento').checked,
+    persona: document.getElementById('cfg_persona').value,
+  };
+  const respChk = document.getElementById('cfg_auto_resposta');
+  if (respChk && !respChk.disabled) patch.auto_resposta = respChk.checked;
+  try {
+    await api('PUT', `/api/clientes/${id}/ai-config`, patch);
+    toast('Configuração de IA salva!');
+    carregarSecaoIA(id);
+  } catch (err) {
+    toast(err.message, true);
+    carregarSecaoIA(id); // reverte o checkbox ao estado real
+  }
+}
+
+async function gerarArtefatoIA(id, tipo) {
+  const nEl = document.getElementById('ia_n');
+  const ultimas_n = nEl ? parseInt(nEl.value, 10) || 20 : 20;
+  const corpo = { tipo, selecao: { ultimas_n } };
+  if (tipo === 'documento') corpo.instrucao = prompt('Instrução opcional para o documento (enter para padrão):') || '';
+  if (tipo === 'proposta') corpo.brief = prompt('Brief da proposta (escopo, valores, condições):') || '';
+  toast('Gerando com IA…');
+  try {
+    await api('POST', `/api/clientes/${id}/ai/acao`, corpo);
+    toast('Documento gerado!');
+    abrirFicha(id); // recarrega a ficha (histórico + documentos)
+  } catch (err) { toast(err.message, true); }
+}
+
+async function verDocumento(id, docId) {
+  let d;
+  try { d = await api('GET', `/api/clientes/${id}/documentos/${docId}`); }
+  catch (err) { return toast(err.message, true); }
+  abrirModal(`
+    <h1>${esc(d.titulo)}</h1>
+    <p class="subtitulo">${esc(d.tipo)}${d.gerado_por_ia ? ' · gerado por IA' : ''}</p>
+    <pre class="doc-conteudo">${esc(d.conteudo)}</pre>
+    <div class="acoes-modal">
+      <button class="btn primario" onclick="baixarDocumento('${id}','${docId}')">Baixar (.md)</button>
+      <button class="btn" onclick="abrirFicha('${id}')">Voltar ao lead</button>
+    </div>
+  `);
+}
+
+async function baixarDocumento(id, docId) {
+  let d;
+  try { d = await api('GET', `/api/clientes/${id}/documentos/${docId}`); }
+  catch (err) { return toast(err.message, true); }
+  const blob = new Blob([d.conteudo || ''], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(d.titulo || 'documento').replace(/[^\w.-]+/g, '_')}.md`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+async function excluirDocumento(id, docId) {
+  if (!confirm('Excluir este documento?')) return;
+  try { await api('DELETE', `/api/clientes/${id}/documentos/${docId}`); toast('Documento excluído.'); carregarSecaoIA(id); }
+  catch (err) { toast(err.message, true); }
 }
 
 async function salvarInteracao(id) {
@@ -317,8 +431,8 @@ async function abrirFormulario(id) {
       <div class="campo"><label>Data da próxima ação</label><input id="f_acao_data" type="date" value="${c.proxima_acao_data || ''}" /></div>
     </div>
     <div class="acoes-modal">
-      <button class="btn primario" onclick="salvarCliente(${id || 'null'})">Salvar</button>
-      <button class="btn" onclick="${id ? `abrirFicha(${id})` : 'fecharModal()'}">Cancelar</button>
+      <button class="btn primario" onclick="salvarCliente(${id ? `'${id}'` : 'null'})">Salvar</button>
+      <button class="btn" onclick="${id ? `abrirFicha('${id}')` : 'fecharModal()'}">Cancelar</button>
     </div>
   `);
 }
@@ -360,7 +474,9 @@ function mostrarApp() {
   document.getElementById('app').classList.remove('escondido');
   document.getElementById('usuario-nome').textContent = USUARIO ? USUARIO.nome.split(' ')[0] : '';
   // some o botão de integrações se não for admin
-  document.getElementById('btnIntegracoes').style.display = (USUARIO && USUARIO.papel === 'admin') ? '' : 'none';
+  document.getElementById('btnIntegracoes').style.display = (USUARIO && ['owner', 'admin'].includes(USUARIO.papel)) ? '' : 'none';
+  // mostra a aba do operador só para o operador de plataforma
+  document.getElementById('aba-operador').style.display = OPERADOR ? '' : 'none';
 }
 
 document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -376,7 +492,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     });
     const d = await resp.json();
     if (!resp.ok) throw new Error(d.erro || 'Falha no login');
-    USUARIO = d.usuario; CSRF = d.csrf;
+    USUARIO = d.usuario; CSRF = d.csrf; ENT = d.entitlements; OPERADOR = !!d.operador; if (d.org) USUARIO.papel = d.org.papel;
     mostrarApp();
     carregarHoje();
   } catch (err) {
@@ -457,11 +573,76 @@ async function revogarKey(id) {
   catch (err) { toast(err.message, true); }
 }
 
+// =================== PAINEL DO OPERADOR (somente leitura) ===================
+function fmtUSD(micro) { return 'US$ ' + ((Number(micro) || 0) / 1e6).toFixed(2); }
+function fmtDataHora(iso) { if (!iso) return '—'; const d = new Date(iso); return d.toLocaleDateString('pt-BR'); }
+
+async function carregarOperador() {
+  const cards = document.getElementById('op-overview');
+  const lista = document.getElementById('op-orgs');
+  cards.innerHTML = '<div class="vazio">Carregando…</div>'; lista.innerHTML = '';
+  let ov, orgs;
+  try { [ov, orgs] = await Promise.all([api('GET', '/api/operator/overview'), api('GET', '/api/operator/orgs')]); }
+  catch (err) { cards.innerHTML = `<div class="vazio">${esc(err.message)}</div>`; return; }
+
+  const card = (rotulo, valor) => `<div class="op-card"><span class="op-num">${valor}</span><span class="op-rot">${rotulo}</span></div>`;
+  const assin = (ov.porAssinatura || []).map(s => `${esc(s.plano)}/${esc(s.status)}: ${s.n}`).join(' · ') || '—';
+  cards.innerHTML =
+    card('Organizações', ov.totalOrgs) +
+    card('Usuários', ov.totalUsuarios) +
+    card('Clientes (total)', ov.totalClientes) +
+    card('Custo de IA (mês)', fmtUSD(ov.totalAiMicro)) +
+    `<div class="op-card largo"><span class="op-rot">Assinaturas</span><span class="op-assin">${assin}</span></div>`;
+
+  lista.innerHTML = '<h3 class="op-titulo">Organizações</h3>' + (orgs || []).map(o => `
+    <div class="item op-org" onclick="verDetalheOrg('${o.id}')">
+      <div>
+        <strong>${esc(o.nome)}</strong>
+        <span class="badge-doc">${esc(o.plano || 'sem plano')}</span>
+        <span class="badge-doc">${esc(o.status || 's/ assinatura')}</span>
+        ${o.estado !== 'ativa' ? `<span class="badge-doc" style="color:var(--danger)">${esc(o.estado)}</span>` : ''}
+      </div>
+      <small>${o.clientes} clientes · ${o.membros} membros · IA ${fmtUSD(o.ai_custo_micro_periodo)} · desde ${fmtDataHora(o.created_at)}</small>
+    </div>`).join('');
+}
+
+async function verDetalheOrg(id) {
+  let d;
+  try { d = await api('GET', `/api/operator/orgs/${id}`); }
+  catch (err) { return toast(err.message, true); }
+  const s = d.assinatura || {};
+  const membros = (d.membros || []).map(m => `<div class="dado"><span>${esc(m.papel)}:</span> ${esc(m.nome)} (${esc(m.email)})</div>`).join('') || '<div class="vazio">Sem membros.</div>';
+  const usoIA = (d.uso_ia || []).map(u => `<div class="dado"><span>${esc(u.tarefa)}:</span> ${u.chamadas} chamadas · ${fmtUSD(u.micro)}</div>`).join('') || '<div class="vazio">Sem uso de IA no mês.</div>';
+  const cobr = (d.cobranca || []).map(c => `<div class="dado"><span>${fmtDataHora(c.created_at)}:</span> ${esc(c.tipo || '—')}</div>`).join('') || '<div class="vazio">Sem eventos de cobrança.</div>';
+  abrirModal(`
+    <h1>${esc(d.org.nome)}</h1>
+    <p class="subtitulo">Estado: ${esc(d.org.estado)} · desde ${fmtDataHora(d.org.created_at)}</p>
+    <div class="ficha-secao">
+      <h3>Assinatura</h3>
+      <div class="dado"><span>Plano:</span> ${esc(s.plano_nome || s.plano || '—')}</div>
+      <div class="dado"><span>Status:</span> ${esc(s.status || '—')}</div>
+      <div class="dado"><span>Trial até:</span> ${fmtDataHora(s.trial_end)}</div>
+      <div class="dado"><span>Período até:</span> ${fmtDataHora(s.current_period_end)}</div>
+    </div>
+    <div class="ficha-secao">
+      <h3>Uso (mês)</h3>
+      <div class="dado"><span>Clientes:</span> ${d.metricas.clientes}</div>
+      <div class="dado"><span>Custo de IA:</span> ${fmtUSD(d.metricas.ai_custo_micro_periodo)}</div>
+      ${usoIA}
+    </div>
+    <div class="ficha-secao"><h3>Membros</h3>${membros}</div>
+    <div class="ficha-secao"><h3>Cobrança (últimos eventos)</h3>${cobr}</div>
+    <div class="acoes-modal"><button class="btn" onclick="fecharModal()">Fechar</button></div>
+  `);
+}
+
 // expor funcoes usadas no HTML inline
 Object.assign(window, {
   abrirFicha, abrirFormulario, salvarCliente, salvarInteracao, exportarCliente, excluirCliente,
   iniciarArraste, fimArraste, permitirSolta, sairColuna, soltarCartao,
   criarKey, revogarKey,
+  carregarSecaoIA, salvarAiConfig, gerarArtefatoIA, verDocumento, baixarDocumento, excluirDocumento,
+  carregarOperador, verDetalheOrg,
 });
 
 // =================== INICIALIZAÇÃO ===================
@@ -470,7 +651,7 @@ Object.assign(window, {
     const resp = await fetch('/api/auth/me', { credentials: 'same-origin' });
     if (resp.ok) {
       const d = await resp.json();
-      USUARIO = d.usuario; CSRF = d.csrf;
+      USUARIO = d.usuario; CSRF = d.csrf; ENT = d.entitlements; OPERADOR = !!d.operador; if (d.org) USUARIO.papel = d.org.papel;
       mostrarApp();
       carregarHoje();
     } else {

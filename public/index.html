@@ -37,6 +37,7 @@
       <button class="aba ativa" data-tela="hoje">Hoje</button>
       <button class="aba" data-tela="funil">Funil</button>
       <button class="aba" data-tela="clientes">Clientes</button>
+      <button class="aba" data-tela="operador" id="aba-operador" style="display:none">Operador</button>
     </nav>
     <div class="topo-direita">
       <button id="btnNovo" class="btn primario">+ Novo cliente</button>
@@ -94,6 +95,17 @@
       </div>
       <input id="busca" class="busca" placeholder="Buscar por nome ou empresa..." />
       <div id="tabela-clientes" class="lista"></div>
+    </section>
+
+    <!-- TELA OPERADOR (somente para o operador de plataforma) -->
+    <section id="tela-operador" class="tela">
+      <div class="cabecalho-tela">
+        <span class="eyebrow">Plataforma</span>
+        <h1 class="display-tela">Painel do <em>operador</em></h1>
+        <p class="sub">Visão agregada das organizações. Somente leitura — não acessa o conteúdo dos CRMs.</p>
+      </div>
+      <div id="op-overview" class="op-cards"></div>
+      <div id="op-orgs" class="lista"></div>
     </section>
   </main>
   </div><!-- /#app -->
