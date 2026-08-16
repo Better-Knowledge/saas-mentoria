@@ -32,11 +32,53 @@ esquecer um follow-up. Pensado para uso individual + integração com agentes de
 ## Telas
 
 - **Hoje** — o que está atrasado e o que fazer hoje (suas próximas ações).
+- **Dashboard** — os números do negócio, em quatro camadas (veja abaixo).
 - **Funil** — quadro Kanban; arraste os cartões entre as 4 etapas.
 - **Clientes** — lista com busca; clique para abrir a ficha completa.
 - **Usuários** (menu do usuário, só admin) — cadastre e gerencie quem acessa o CRM.
 - **Integrações** (menu do usuário, só admin) — crie/revogue chaves de API para a IA.
 - **Trocar minha senha** (menu do usuário, todos) — autoatendimento de senha.
+
+## Dashboard
+
+Organizado da resposta rápida para o detalhe, em vez de um mural de gráficos:
+
+1. **KPIs** — pipeline em aberto, **pipeline ponderado**, taxa de vitória e ticket médio.
+2. **Evolução** — ganhos × perdidos por mês, receita ganha acumulada, novos leads por mês e
+   a proporção de cadastros feitos por IA e por pessoas.
+3. **Composição** — valor parado em cada etapa do funil, origem dos leads e tipo de cliente.
+4. **Precisa de atenção** — leads sem próxima ação agendada, parados há mais de 30 dias e
+   propostas enviadas ainda em aberto. Clique em qualquer um para abrir a ficha.
+
+O **pipeline ponderado** multiplica o valor de cada negócio pelo peso da etapa
+(`novo` 10% · `qualificação` 25% · `reunião` 50% · `proposta` 75%), definido em
+[`crm-service.js`](crm-service.js) — ajuste conforme a sua taxa real de conversão. É a diferença
+entre somar desejos e ter uma previsão: um lead recém-chegado de R$ 90 mil não vale R$ 90 mil.
+
+A **origem** é medida por valor **ganho**, não por volume de leads: três indicações que fecham
+valem mais que vinte cliques que não fecham.
+
+Os gráficos são SVG gerado no próprio `app.js` — sem biblioteca, sem peso extra e sem afrouxar a CSP.
+
+### O campo `fechado_em`
+
+Medir ganhos e perdas por mês exige saber **quando** o negócio fechou. O `updated_at` não serve —
+ele muda a cada edição, então corrigir um telefone jogaria a venda para outro mês. Por isso existe
+`clientes.fechado_em`, preenchido pela transição de `resultado`: fechar carimba a data de hoje,
+reabrir volta a `null`, e corrigir `ganho` ↔ `perdido` mantém a data original.
+
+A migração é automática no start. Negócios que já estavam fechados antes da coluna existir
+receberam `date(updated_at)` como **estimativa** — o dashboard avisa isso na tela enquanto o
+histórico for curto. Detalhes em [docs/DICIONARIO-DADOS-LEADS.md](docs/DICIONARIO-DADOS-LEADS.md).
+
+### O que ficou de fora, e por quê
+
+**Taxa de conversão entre etapas** e **tempo médio por etapa** exigiriam histórico de mudanças de
+etapa; o schema guarda só a etapa *atual*. Dá para saber quantos leads **estão** em cada etapa,
+nunca quantos **passaram** por elas. Precisaria de uma tabela de histórico.
+
+A **origem** é texto livre: `indicação` e `Indicação` viram duas barras diferentes. Se o gráfico
+começar a se fragmentar, vale transformar o campo numa lista fechada com opção "outra".
 
 ## Autenticação (dois planos)
 
@@ -87,6 +129,7 @@ Todos os endpoints exigem autenticação. Para automações, use uma chave de AP
 | GET | `/api/clientes/:id/export` | Exporta tudo do cliente (LGPD) |
 | GET/POST | `/api/clientes/:id/interacoes` | Lista / adiciona anotação |
 | GET | `/api/hoje` | Ações de hoje, atrasadas e futuras |
+| GET | `/api/dashboard` | Métricas consolidadas (KPIs, séries mensais, composição) |
 
 Exemplo (a IA criando um lead que chegou pelo WhatsApp):
 ```powershell

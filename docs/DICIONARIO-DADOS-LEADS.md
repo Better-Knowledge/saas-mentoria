@@ -46,6 +46,20 @@
 | `id` | Autoincremento. |
 | `created_by` | Derivado da credencial (`ia` para API key, `humano` para sessão). Mesmo que você envie no corpo, é **ignorado**. |
 | `created_at` / `updated_at` | Timestamp automático (hora local do servidor). |
+| `fechado_em` | Data (`YYYY-MM-DD`) em que o negócio saiu de `em_aberto`, derivada da **transição** de `resultado`. Enviar no corpo é ignorado. |
+
+#### Como o `fechado_em` se comporta
+
+| Transição de `resultado` | O que acontece com `fechado_em` |
+|---|---|
+| `em_aberto` → `ganho` ou `perdido` | recebe a data de hoje |
+| `ganho` ou `perdido` → `em_aberto` | volta a `null` (negócio reaberto) |
+| `ganho` ↔ `perdido` | **mantém** a data original — só o desfecho foi corrigido |
+| lead já criado como `ganho`/`perdido` | nasce com a data de hoje |
+
+Vale tanto para `PUT /api/clientes/:id` quanto para `PUT /api/clientes/:id/etapa` (e para as
+ferramentas MCP equivalentes). É o campo que sustenta os gráficos mensais do **Dashboard** —
+`updated_at` não serviria, porque muda a cada edição do cadastro.
 
 ---
 

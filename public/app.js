@@ -64,6 +64,7 @@ document.querySelectorAll('.aba').forEach(aba => {
     const tela = aba.dataset.tela;
     document.getElementById('tela-' + tela).classList.add('ativa');
     if (tela === 'hoje') carregarHoje();
+    if (tela === 'dashboard') carregarDashboard();
     if (tela === 'funil') carregarFunil();
     if (tela === 'clientes') carregarClientes();
   });
@@ -346,8 +347,222 @@ function val(id) { return document.getElementById(id).value.trim(); }
 function recarregarTelaAtiva() {
   const ativa = document.querySelector('.aba.ativa').dataset.tela;
   if (ativa === 'hoje') carregarHoje();
+  if (ativa === 'dashboard') carregarDashboard();
   if (ativa === 'funil') carregarFunil();
   if (ativa === 'clientes') carregarClientes();
+}
+
+// =================== DASHBOARD ===================
+// Gráficos em SVG gerado aqui mesmo: sem biblioteca, sem peso extra e sem
+// afrouxar a CSP. As cores saem das variáveis do design system.
+const MESES_CURTOS = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+function rotuloMes(chave) {              // '2026-08' -> 'ago/26'
+  const [a, m] = chave.split('-');
+  return `${MESES_CURTOS[Number(m) - 1]}/${a.slice(2)}`;
+}
+function fmtCompacto(v) {                // 239500 -> 'R$ 240k'
+  const n = Number(v) || 0;
+  if (Math.abs(n) >= 1000) return 'R$ ' + Math.round(n / 1000) + 'k';
+  return 'R$ ' + Math.round(n);
+}
+
+// Barras agrupadas: duas séries lado a lado ao longo dos meses.
+function svgBarrasAgrupadas(serie, series) {
+  const L = 52, R = 8, T = 10, B = 26, W = 720, H = 220;
+  const larguraPlot = W - L - R, alturaPlot = H - T - B;
+  const max = Math.max(1, ...serie.flatMap(p => series.map(s => p[s.campo])));
+  const slot = larguraPlot / serie.length;
+  const larguraBarra = Math.min(16, (slot - 8) / series.length);
+  const y = v => T + alturaPlot - (v / max) * alturaPlot;
+
+  // 4 linhas de grade + rótulos do eixo
+  const grade = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const vy = T + alturaPlot - f * alturaPlot;
+    return `<line class="svg-grade" x1="${L}" y1="${vy}" x2="${W - R}" y2="${vy}" />
+      <text class="svg-rotulo" x="${L - 8}" y="${vy + 4}" text-anchor="end">${series[0].moeda ? fmtCompacto(max * f) : Math.round(max * f)}</text>`;
+  }).join('');
+
+  const barras = serie.map((p, i) => {
+    const base = L + i * slot + (slot - larguraBarra * series.length) / 2;
+    return series.map((s, j) => {
+      const v = p[s.campo];
+      const altura = Math.max(v > 0 ? 2 : 0, T + alturaPlot - y(v));
+      return `<rect x="${base + j * larguraBarra}" y="${y(v)}" width="${larguraBarra - 2}" height="${altura}"
+        rx="2" fill="${s.cor}"><title>${rotuloMes(p.mes)} — ${s.nome}: ${s.moeda ? fmtMoeda(v) || 'R$ 0' : v}</title></rect>`;
+    }).join('');
+  }).join('');
+
+  const rotulos = serie.map((p, i) =>
+    `<text class="svg-rotulo" x="${L + i * slot + slot / 2}" y="${H - 8}" text-anchor="middle">${rotuloMes(p.mes)}</text>`
+  ).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" role="img">${grade}${barras}${rotulos}</svg>`;
+}
+
+// Linha com área: acumulado ao longo dos meses.
+function svgLinha(serie, campo, cor) {
+  const L = 52, R = 8, T = 10, B = 26, W = 720, H = 220;
+  const larguraPlot = W - L - R, alturaPlot = H - T - B;
+  let acumulado = 0;
+  const pontos = serie.map((p, i) => {
+    acumulado += p[campo];
+    return { x: L + (larguraPlot / Math.max(1, serie.length - 1)) * i, v: acumulado, mes: p.mes };
+  });
+  const max = Math.max(1, ...pontos.map(p => p.v));
+  const y = v => T + alturaPlot - (v / max) * alturaPlot;
+
+  const grade = [0, 0.5, 1].map(f => {
+    const vy = T + alturaPlot - f * alturaPlot;
+    return `<line class="svg-grade" x1="${L}" y1="${vy}" x2="${W - R}" y2="${vy}" />
+      <text class="svg-rotulo" x="${L - 8}" y="${vy + 4}" text-anchor="end">${fmtCompacto(max * f)}</text>`;
+  }).join('');
+
+  const d = pontos.map((p, i) => `${i ? 'L' : 'M'}${p.x},${y(p.v)}`).join(' ');
+  const area = `${d} L${pontos[pontos.length - 1].x},${T + alturaPlot} L${pontos[0].x},${T + alturaPlot} Z`;
+  const bolinhas = pontos.map(p =>
+    `<circle cx="${p.x}" cy="${y(p.v)}" r="3.5" fill="${cor}"><title>${rotuloMes(p.mes)}: ${fmtMoeda(p.v) || 'R$ 0'}</title></circle>`
+  ).join('');
+  const rotulos = pontos.map((p, i) =>
+    i % 2 === 0 ? `<text class="svg-rotulo" x="${p.x}" y="${H - 8}" text-anchor="middle">${rotuloMes(p.mes)}</text>` : ''
+  ).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" role="img">${grade}
+    <path d="${area}" fill="${cor}" opacity="0.12" />
+    <path d="${d}" fill="none" stroke="${cor}" stroke-width="2.5" stroke-linejoin="round" />
+    ${bolinhas}${rotulos}</svg>`;
+}
+
+// Barras horizontais em HTML (mais legíveis que SVG para rótulos longos).
+function barrasHorizontais(itens) {
+  const max = Math.max(1, ...itens.map(i => i.valor));
+  return itens.map(i => `
+    <div class="barra-linha">
+      <div class="barra-nome">${esc(i.nome)}${i.sub ? `<small>${esc(i.sub)}</small>` : ''}</div>
+      <div class="barra-trilho">
+        <div class="barra-preenchida" style="width:${(i.valor / max) * 100}%; background:${i.cor}"></div>
+      </div>
+      <div class="barra-valor">${i.rotulo}</div>
+    </div>`).join('');
+}
+
+function caixaGrafico(titulo, nota, conteudo, legenda) {
+  return `<div class="grafico-caixa">
+    <div class="grafico-titulo">${titulo}</div>
+    ${nota ? `<div class="grafico-nota">${nota}</div>` : ''}
+    ${conteudo}
+    ${legenda ? `<div class="legenda">${legenda}</div>` : ''}
+  </div>`;
+}
+
+function listaAtencao(titulo, nota, itens, vazio) {
+  const linhas = itens.length ? itens.map(c => `
+    <div class="item" onclick="abrirFicha(${c.id})">
+      <div class="info">
+        <b>${esc(c.nome)}</b>
+        <small>${esc(c.empresa || '—')}${c.dias != null ? ` · parado há ${c.dias} dias` : ''}</small>
+      </div>
+      <div class="acao">${fmtMoeda(c.valor_estimado) || '—'}</div>
+    </div>`).join('') : `<div class="vazio">${vazio}</div>`;
+  return `<div class="grafico-caixa">
+    <div class="grafico-titulo">${titulo} ${itens.length ? `<span class="tag perdido">${itens.length}</span>` : ''}</div>
+    <div class="grafico-nota">${nota}</div>
+    <div class="lista" style="margin-top:14px">${linhas}</div>
+  </div>`;
+}
+
+async function carregarDashboard() {
+  const d = await api('GET', '/api/dashboard');
+  const k = d.kpis;
+  const CORES = { ganho: 'var(--success)', perda: 'var(--danger)', destaque: 'var(--ac-orange)', neutro: 'var(--ac-stone)' };
+
+  // ---- aviso quando ainda não há história suficiente para as séries ----
+  const mesesComFecho = d.serie.filter(m => m.ganhos || m.perdidos).length;
+  document.getElementById('dash-aviso').innerHTML = mesesComFecho <= 1
+    ? `<div class="dash-aviso"><b>Base de histórico ainda curta.</b> Os gráficos mensais só ficam
+       interessantes depois de alguns meses de negócios fechados. Negócios que já estavam fechados
+       antes desta tela existir receberam a data da última alteração como estimativa.</div>`
+    : '';
+
+  // ---- camada 1: KPIs ----
+  document.getElementById('dash-kpis').innerHTML = `
+    <div class="stat-card">
+      <div class="stat-num medio">${fmtMoeda(k.pipeline.valor) || 'R$ 0'}</div>
+      <div class="stat-lbl">Pipeline em aberto</div>
+      <div class="stat-ctx"><span class="destaque">${k.pipeline.qtd}</span> negócios em andamento</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num medio">${fmtMoeda(k.ponderado.valor) || 'R$ 0'}</div>
+      <div class="stat-lbl">Pipeline ponderado</div>
+      <div class="stat-ctx">previsão pelo peso de cada etapa</div>
+    </div>
+    <div class="stat-card ${k.vitoria.pct != null && k.vitoria.pct < 50 ? 'alerta' : ''}">
+      <div class="stat-num medio">${k.vitoria.pct == null ? '—' : Math.round(k.vitoria.pct) + '%'}</div>
+      <div class="stat-lbl">Taxa de vitória</div>
+      <div class="stat-ctx">${k.vitoria.ganhos} ganhos · ${k.vitoria.perdidos} perdidos</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num medio">${k.ticketMedio.valor == null ? '—' : fmtMoeda(k.ticketMedio.valor)}</div>
+      <div class="stat-lbl">Ticket médio</div>
+      <div class="stat-ctx">${k.ticketMedio.base ? `base de ${k.ticketMedio.base} negócio(s) ganho(s)` : 'sem negócios ganhos ainda'}
+        ${k.cicloDias != null ? ` · ciclo de ${k.cicloDias} dias` : ''}</div>
+    </div>`;
+
+  // ---- camada 2: evolução ----
+  document.getElementById('dash-evolucao').innerHTML =
+    caixaGrafico('Ganhos × perdidos por mês', 'Valor dos negócios fechados em cada mês.',
+      svgBarrasAgrupadas(d.serie, [
+        { campo: 'valorGanho', nome: 'Ganhos', cor: CORES.ganho, moeda: true },
+        { campo: 'valorPerdido', nome: 'Perdidos', cor: CORES.perda, moeda: true },
+      ]),
+      `<span><i style="background:var(--success)"></i>Ganhos</span>
+       <span><i style="background:var(--danger)"></i>Perdidos</span>`)
+    + caixaGrafico('Receita ganha acumulada', 'Soma corrida dos negócios ganhos no período.',
+      svgLinha(d.serie, 'valorGanho', 'var(--ac-orange)'))
+    + caixaGrafico('Novos leads por mês', 'Quantos entraram no funil — mede geração de demanda.',
+      svgBarrasAgrupadas(d.serie, [{ campo: 'novos', nome: 'Novos leads', cor: CORES.destaque }]))
+    + caixaGrafico('Quem cadastra os leads', 'Adoção do agente de IA frente ao cadastro manual.',
+      barrasHorizontais([
+        { nome: 'Humano', valor: d.autoria.humano, rotulo: d.autoria.humano, cor: 'var(--ac-graphite)' },
+        { nome: 'IA', valor: d.autoria.ia, rotulo: d.autoria.ia, cor: CORES.destaque },
+      ]));
+
+  // ---- camada 3: composição ----
+  const nomeEtapa = id => (ETAPAS.find(e => e.id === id) || {}).nome || id;
+  document.getElementById('dash-composicao').innerHTML =
+    caixaGrafico('Funil em aberto', 'Valor parado em cada etapa. Pipeline empilhado no começo é ilusão de volume.',
+      barrasHorizontais(d.funil.map(f => ({
+        nome: nomeEtapa(f.etapa), sub: `${f.qtd} negócio(s) · peso ${Math.round(f.peso * 100)}%`,
+        valor: f.valor, rotulo: fmtCompacto(f.valor), cor: CORES.destaque,
+      }))))
+    + caixaGrafico('Origem dos leads', 'A barra é o valor <b>ganho</b>, não o volume: origem que traz muito e fecha pouco não merece barra. O pipeline em aberto aparece no texto.',
+      barrasHorizontais(d.origens.map(o => ({
+        nome: o.origem,
+        // quem já fechou mostra os ganhos; quem não fechou mostra o que ainda
+        // está em jogo — uma informação por linha, sem estourar a coluna
+        sub: o.ganhos
+          ? `${o.qtd} lead(s) · ${o.ganhos} ganho(s)`
+          : `${o.qtd} lead(s) · ${fmtCompacto(o.valorAberto)} aberto`,
+        valor: o.valorGanho,
+        rotulo: o.valorGanho ? fmtCompacto(o.valorGanho) : '—',
+        cor: CORES.ganho,
+      }))))
+    + caixaGrafico('Por tipo de cliente', 'Distribuição da carteira.',
+      barrasHorizontais(d.tipos.map(t => ({
+        nome: TIPOS[t.tipo] || t.tipo, sub: fmtMoeda(t.valor) || 'R$ 0',
+        valor: t.qtd, rotulo: t.qtd, cor: 'var(--ac-graphite)',
+      }))));
+
+  // ---- camada 4: listas de ação ----
+  document.getElementById('dash-atencao').innerHTML =
+    listaAtencao('Sem próxima ação agendada',
+      'Estes somem da tela Hoje — é o vazamento silencioso do funil.',
+      d.atencao.semProximaAcao, 'Nenhum lead solto. Funil limpo.')
+    + listaAtencao(`Parados há mais de ${d.atencao.diasParado} dias`,
+      'Sem qualquer movimentação no cadastro ou anotação.',
+      d.atencao.parados, 'Nada esquecido por aqui.')
+    + listaAtencao('Propostas enviadas em aberto',
+      'Onde está o dinheiro mais quente — vale um follow-up.',
+      d.atencao.propostasAbertas, 'Nenhuma proposta aguardando resposta.');
 }
 
 // =================== LOGIN / SESSÃO ===================
@@ -630,6 +845,7 @@ Object.assign(window, {
   criarKey, revogarKey,
   abrirUsuarios, criarUsuario, abrirEditarUsuario, salvarUsuario,
   redefinirSenhaUsuario, excluirUsuario, salvarPropriaSenha, fecharModal,
+  carregarDashboard,
 });
 
 // =================== INICIALIZAÇÃO ===================

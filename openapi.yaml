@@ -392,6 +392,28 @@ paths:
               schema: { $ref: '#/components/schemas/HojeResponse' }
         '401': { $ref: '#/components/responses/Erro401' }
 
+  /api/dashboard:
+    get:
+      tags: [Agenda]
+      summary: Métricas consolidadas (tela Dashboard)
+      description: |
+        Uma leitura agregada com tudo o que a tela precisa. Nada é materializado — todos os
+        números são calculados no banco a cada chamada, então não há métrica dessincronizada.
+
+        Depende de `fechado_em` para as séries mensais de ganhos/perdidos e para o ciclo de vendas.
+        Leads fechados **antes** de a coluna existir receberam `date(updated_at)` como estimativa
+        na migração.
+
+        O **pipeline ponderado** aplica um peso por etapa (`novo` 10%, `qualificacao` 25%,
+        `reuniao` 50%, `proposta` 75%) sobre o `valor_estimado` dos leads em aberto.
+      responses:
+        '200':
+          description: Métricas do dashboard
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardResponse' }
+        '401': { $ref: '#/components/responses/Erro401' }
+
   /api/keys:
     get:
       tags: [API Keys]
@@ -624,6 +646,15 @@ components:
         proxima_acao: { type: string, nullable: true }
         proxima_acao_data: { type: string, nullable: true, example: "2026-06-10" }
         created_by: { type: string, enum: [humano, ia], readOnly: true }
+        fechado_em:
+          type: string
+          nullable: true
+          readOnly: true
+          example: "2026-08-16"
+          description: |
+            Data (`YYYY-MM-DD`) em que o negócio saiu de `em_aberto`. Derivada da **transição**
+            de `resultado`, nunca do corpo da requisição: fechar carimba hoje, reabrir volta a
+            `null`, e corrigir `ganho` ↔ `perdido` mantém a data original.
         created_at: { type: string, readOnly: true, example: "2026-06-06 14:30:00" }
         updated_at: { type: string, readOnly: true, example: "2026-06-06 14:30:00" }
         total_interacoes:
@@ -646,6 +677,104 @@ components:
       required: [texto]
       properties:
         texto: { type: string, maxLength: 5000, example: "Cliente pediu proposta por e-mail." }
+
+    DashboardResponse:
+      type: object
+      description: Agregados da tela Dashboard, em quatro camadas (KPIs, evolução, composição, ação).
+      properties:
+        kpis:
+          type: object
+          properties:
+            pipeline:
+              type: object
+              description: Leads em aberto.
+              properties:
+                valor: { type: number, example: 239500 }
+                qtd: { type: integer, example: 8 }
+            ponderado:
+              type: object
+              description: Pipeline multiplicado pelo peso de cada etapa.
+              properties:
+                valor: { type: number, example: 108900 }
+            vitoria:
+              type: object
+              properties:
+                pct: { type: number, nullable: true, description: "null quando nada foi fechado ainda", example: 50 }
+                ganhos: { type: integer, example: 1 }
+                perdidos: { type: integer, example: 1 }
+            ticketMedio:
+              type: object
+              properties:
+                valor: { type: number, nullable: true, example: 62000 }
+                base: { type: integer, description: Quantos negócios ganhos sustentam a média. }
+            cicloDias:
+              type: integer
+              nullable: true
+              description: Média de dias entre criação e fechamento dos negócios ganhos.
+            receitaGanha: { type: number, example: 62000 }
+        serie:
+          type: array
+          description: Últimos 12 meses, incluindo meses sem movimento.
+          items:
+            type: object
+            properties:
+              mes: { type: string, example: "2026-08" }
+              ganhos: { type: integer }
+              valorGanho: { type: number }
+              perdidos: { type: integer }
+              valorPerdido: { type: number }
+              novos: { type: integer, description: Leads criados no mês (via created_at). }
+        funil:
+          type: array
+          description: Só leads em aberto.
+          items:
+            type: object
+            properties:
+              etapa: { type: string, enum: [novo, qualificacao, reuniao, proposta] }
+              qtd: { type: integer }
+              valor: { type: number }
+              peso: { type: number, example: 0.75 }
+              ponderado: { type: number }
+        origens:
+          type: array
+          description: Ordenado por valor ganho. Origem vazia vira "Sem origem".
+          items:
+            type: object
+            properties:
+              origem: { type: string, example: "Indicação" }
+              qtd: { type: integer }
+              ganhos: { type: integer }
+              valorGanho: { type: number }
+              valorAberto: { type: number }
+        tipos:
+          type: array
+          items:
+            type: object
+            properties:
+              tipo: { type: string, example: b2b }
+              qtd: { type: integer }
+              valor: { type: number }
+        autoria:
+          type: object
+          description: Quantos leads vieram de pessoa e quantos do agente de IA.
+          properties:
+            humano: { type: integer, example: 8 }
+            ia: { type: integer, example: 2 }
+        atencao:
+          type: object
+          description: Listas acionáveis, todas restritas a leads em aberto.
+          properties:
+            semProximaAcao:
+              type: array
+              items: { $ref: '#/components/schemas/LeadResumo' }
+            parados:
+              type: array
+              description: Sem qualquer alteração há `diasParado` dias ou mais.
+              items: { $ref: '#/components/schemas/LeadResumo' }
+            propostasAbertas:
+              type: array
+              items: { $ref: '#/components/schemas/LeadResumo' }
+            diasParado: { type: integer, example: 30 }
 
     HojeResponse:
       type: object

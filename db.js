@@ -85,4 +85,24 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 `);
 
+// ===== MIGRACOES =====
+// Aditivas e idempotentes: rodam a cada start e nao tocam em dados existentes.
+function temColuna(tabela, coluna) {
+  return db.prepare(`PRAGMA table_info(${tabela})`).all().some(c => c.name === coluna);
+}
+
+// fechado_em: data (YYYY-MM-DD) em que o negocio saiu de "em_aberto".
+// Sem ela nao da para medir ganhos/perdas por mes nem ciclo de vendas —
+// updated_at nao serve, porque muda a cada edicao do cadastro.
+if (!temColuna('clientes', 'fechado_em')) {
+  db.exec('ALTER TABLE clientes ADD COLUMN fechado_em TEXT');
+  // Retroativo: quem ja estava ganho/perdido nao tem a data real do desfecho.
+  // O updated_at e o melhor palpite disponivel — marcado uma unica vez, aqui.
+  const info = db.prepare(`
+    UPDATE clientes SET fechado_em = date(updated_at)
+    WHERE resultado != 'em_aberto' AND fechado_em IS NULL
+  `).run();
+  console.log(`[migracao] coluna clientes.fechado_em criada; ${info.changes} registro(s) ja fechados receberam date(updated_at) como estimativa.`);
+}
+
 module.exports = db;
