@@ -72,6 +72,39 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ usuario: { id: s.usuario_id, nome: s.nome, email: s.email, papel: s.papel }, csrf: s.csrf });
 });
 
+// troca da própria senha (qualquer usuário logado, via sessão)
+app.put('/api/auth/senha', auth.requireAuth, auth.csrfProtect, (req, res) => {
+  if (req.principal.credencial !== 'sessao') {
+    return res.status(403).json({ erro: 'Apenas usuários logados na interface' });
+  }
+  const token = req.cookies && req.cookies[auth.COOKIE_NOME];
+  res.json(auth.trocarPropriaSenha(req.principal.id, req.body || {}, token));
+});
+
+// =================== USUÁRIOS (somente admin, via sessão) ===================
+app.get('/api/usuarios', auth.requireAuth, auth.requireAdmin, (req, res) => {
+  res.json(auth.listarUsuarios());
+});
+
+app.post('/api/usuarios', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, (req, res) => {
+  const { nome, email, senha, papel } = req.body || {};
+  res.status(201).json(auth.cadastrarUsuario({ nome, email, senha, papel }));
+});
+
+app.put('/api/usuarios/:id', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, (req, res) => {
+  const { nome, papel } = req.body || {};
+  res.json(auth.atualizarUsuario(req.params.id, { nome, papel }));
+});
+
+// admin redefine a senha de outra pessoa (derruba as sessões dela)
+app.put('/api/usuarios/:id/senha', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, (req, res) => {
+  res.json(auth.redefinirSenha(req.params.id, (req.body || {}).senha));
+});
+
+app.delete('/api/usuarios/:id', auth.requireAuth, auth.csrfProtect, auth.requireAdmin, (req, res) => {
+  res.json(auth.excluirUsuario(req.params.id, req.principal.id));
+});
+
 // =================== API KEYS (somente admin, via sessão) ===================
 app.get('/api/keys', auth.requireAuth, auth.requireAdmin, (req, res) => {
   res.json(auth.listarApiKeys());
@@ -156,8 +189,9 @@ async function iniciar() {
 
   // ---- handler global de erros (não derruba o processo) ----
   app.use((err, req, res, next) => {
-    // erros de domínio do crm-service viram 400/404 de negócio (em vez de 500 genérico)
-    if (err instanceof crm.ErroDominio) {
+    // erros de domínio (crm-service) e de gestão de acesso (auth) viram
+    // 400/403/404/409 de negócio, em vez de 500 genérico
+    if (err instanceof crm.ErroDominio || err instanceof auth.ErroAuth) {
       return res.status(err.status).json({ erro: err.message });
     }
     console.error('Erro:', err.message);
