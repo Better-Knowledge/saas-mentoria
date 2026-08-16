@@ -352,6 +352,11 @@ function recarregarTelaAtiva() {
 
 // =================== LOGIN / SESSÃO ===================
 function mostrarLogin() {
+  // Fecha o modal e limpa a sessão em memória: sem isso, sair (ou a sessão
+  // expirar) deixaria a última tela aberta — lista de usuários, chaves de API —
+  // visível por cima do login para quem sentar no navegador em seguida.
+  fecharModal();
+  USUARIO = null; CSRF = null;
   document.getElementById('app').classList.add('escondido');
   document.getElementById('login').classList.remove('escondido');
 }
@@ -359,8 +364,11 @@ function mostrarApp() {
   document.getElementById('login').classList.add('escondido');
   document.getElementById('app').classList.remove('escondido');
   document.getElementById('usuario-nome').textContent = USUARIO ? USUARIO.nome.split(' ')[0] : '';
-  // some o botão de integrações se não for admin
-  document.getElementById('btnIntegracoes').style.display = (USUARIO && USUARIO.papel === 'admin') ? '' : 'none';
+  // itens de administração (usuários e chaves de API) só aparecem para admin.
+  // Isto é conveniência de interface — quem manda é o requireAdmin no servidor.
+  const ehAdmin = !!(USUARIO && USUARIO.papel === 'admin');
+  document.getElementById('btnUsuarios').style.display = ehAdmin ? '' : 'none';
+  document.getElementById('btnIntegracoes').style.display = ehAdmin ? '' : 'none';
 }
 
 document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -387,8 +395,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 
 async function sair() {
   try { await api('POST', '/api/auth/logout'); } catch (_) {}
-  USUARIO = null; CSRF = null;
-  mostrarLogin();
+  mostrarLogin(); // limpa USUARIO/CSRF e fecha o modal
 }
 
 // menu do usuário
@@ -399,6 +406,165 @@ document.getElementById('btnUsuario').addEventListener('click', (e) => {
 document.addEventListener('click', () => dropdown.classList.add('escondido'));
 document.getElementById('btnSair').addEventListener('click', sair);
 document.getElementById('btnIntegracoes').addEventListener('click', abrirIntegracoes);
+document.getElementById('btnUsuarios').addEventListener('click', abrirUsuarios);
+document.getElementById('btnSenha').addEventListener('click', abrirTrocarSenha);
+
+// =================== USUÁRIOS (somente admin) ===================
+const PAPEIS = { admin: 'Administrador', assistente: 'Assistente' };
+
+async function abrirUsuarios() {
+  const usuarios = await api('GET', '/api/usuarios');
+  const linhas = usuarios.map(u => `
+    <div class="item" style="cursor:default">
+      <div class="info">
+        <b>${esc(u.nome)}
+          <span class="tag ${u.papel === 'admin' ? 'ganho' : ''}">${PAPEIS[u.papel] || esc(u.papel)}</span>
+          ${u.id === USUARIO.id ? '<span class="tag">você</span>' : ''}</b>
+        <small>${esc(u.email)} · desde ${esc(u.created_at)}</small>
+      </div>
+      <div style="display:flex; gap:8px">
+        <button class="btn" onclick="abrirEditarUsuario(${u.id})">Editar</button>
+        ${u.id === USUARIO.id ? '' : `<button class="btn perigo" onclick="excluirUsuario(${u.id})">Excluir</button>`}
+      </div>
+    </div>`).join('');
+
+  abrirModal(`
+    <span class="eyebrow">Quem acessa o CRM</span>
+    <h1>Usuários</h1>
+    <p class="sub">O <b>administrador</b> gerencia usuários e chaves de API. O <b>assistente</b> usa o
+      CRM inteiro — cria, edita e exclui clientes — mas não administra acessos.
+      Todos enxergam a mesma carteira de clientes.</p>
+
+    <div class="ficha-secao">
+      <h3>Cadastrar novo usuário</h3>
+      <div class="linha">
+        <div class="campo"><label>Nome *</label><input id="u_nome" placeholder="Maria Souza" /></div>
+        <div class="campo"><label>E-mail *</label><input id="u_email" type="email" placeholder="maria@empresa.com" /></div>
+      </div>
+      <div class="linha">
+        <div class="campo"><label>Senha inicial *</label><input id="u_senha" type="password" placeholder="mínimo 8 caracteres" /></div>
+        <div class="campo"><label>Papel</label><select id="u_papel">
+          <option value="assistente">Assistente</option>
+          <option value="admin">Administrador</option>
+        </select></div>
+      </div>
+      <button class="btn primario" onclick="criarUsuario()">Cadastrar usuário</button>
+      <p class="sub" style="margin-top:10px">Combine a senha inicial com a pessoa — ela pode trocá-la
+        depois em <b>Trocar minha senha</b>.</p>
+    </div>
+
+    <div class="ficha-secao">
+      <h3>Usuários cadastrados</h3>
+      <div class="lista">${linhas}</div>
+    </div>
+  `);
+}
+
+async function criarUsuario() {
+  const dados = {
+    nome: val('u_nome'), email: val('u_email'),
+    senha: document.getElementById('u_senha').value, papel: val('u_papel'),
+  };
+  try {
+    await api('POST', '/api/usuarios', dados);
+    toast('Usuário cadastrado!');
+    abrirUsuarios();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function abrirEditarUsuario(id) {
+  const u = (await api('GET', '/api/usuarios')).find(x => x.id === id);
+  if (!u) return toast('Usuário não encontrado.', true);
+  const op = (v, label) => `<option value="${v}" ${v === u.papel ? 'selected' : ''}>${label}</option>`;
+
+  abrirModal(`
+    <h1>Editar usuário</h1>
+    <p class="subtitulo">${esc(u.email)}</p>
+    <div class="linha">
+      <div class="campo"><label>Nome</label><input id="e_nome" value="${esc(u.nome)}" /></div>
+      <div class="campo"><label>Papel</label><select id="e_papel">
+        ${op('assistente', 'Assistente')}${op('admin', 'Administrador')}
+      </select></div>
+    </div>
+    <div class="acoes-modal">
+      <button class="btn primario" onclick="salvarUsuario(${u.id})">Salvar</button>
+      <button class="btn" onclick="abrirUsuarios()">Cancelar</button>
+    </div>
+
+    <div class="ficha-secao">
+      <h3>Redefinir a senha</h3>
+      <p class="sub">Use se a pessoa perdeu o acesso. Todas as sessões dela caem na hora
+        e ela precisa entrar de novo com a senha nova.</p>
+      <div class="campo">
+        <label>Nova senha</label>
+        <div style="display:flex; gap:10px">
+          <input id="e_senha" type="password" placeholder="mínimo 8 caracteres" />
+          <button class="btn" onclick="redefinirSenhaUsuario(${u.id})">Redefinir</button>
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+async function salvarUsuario(id) {
+  try {
+    await api('PUT', '/api/usuarios/' + id, { nome: val('e_nome'), papel: val('e_papel') });
+    toast('Usuário atualizado!');
+    // se mudei a mim mesmo, a interface precisa refletir o novo papel
+    if (id === USUARIO.id) {
+      const me = await api('GET', '/api/auth/me');
+      USUARIO = me.usuario; CSRF = me.csrf;
+      mostrarApp();
+    }
+    abrirUsuarios();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function redefinirSenhaUsuario(id) {
+  const senha = document.getElementById('e_senha').value;
+  try {
+    await api('PUT', `/api/usuarios/${id}/senha`, { senha });
+    toast('Senha redefinida. Passe a nova senha para a pessoa.');
+    abrirUsuarios();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function excluirUsuario(id) {
+  if (!confirm('Excluir este usuário? Ele perde o acesso imediatamente. Os clientes cadastrados por ele continuam no CRM.')) return;
+  try {
+    await api('DELETE', '/api/usuarios/' + id);
+    toast('Usuário excluído.');
+    abrirUsuarios();
+  } catch (err) { toast(err.message, true); }
+}
+
+// =================== TROCAR A PRÓPRIA SENHA ===================
+function abrirTrocarSenha() {
+  abrirModal(`
+    <h1>Trocar minha senha</h1>
+    <p class="sub">Ao salvar, as outras sessões da sua conta são encerradas — esta continua ativa.</p>
+    <div class="campo"><label>Senha atual</label><input id="s_atual" type="password" /></div>
+    <div class="campo"><label>Nova senha</label><input id="s_nova" type="password" placeholder="mínimo 8 caracteres" /></div>
+    <div class="campo"><label>Repita a nova senha</label><input id="s_conf" type="password" /></div>
+    <div class="acoes-modal">
+      <button class="btn primario" onclick="salvarPropriaSenha()">Salvar</button>
+      <button class="btn" onclick="fecharModal()">Cancelar</button>
+    </div>
+  `);
+}
+
+async function salvarPropriaSenha() {
+  const senhaAtual = document.getElementById('s_atual').value;
+  const senhaNova = document.getElementById('s_nova').value;
+  if (senhaNova !== document.getElementById('s_conf').value) {
+    return toast('A confirmação não confere com a nova senha.', true);
+  }
+  try {
+    await api('PUT', '/api/auth/senha', { senhaAtual, senhaNova });
+    toast('Senha alterada!');
+    fecharModal();
+  } catch (err) { toast(err.message, true); }
+}
 
 // =================== INTEGRAÇÕES (API KEYS) ===================
 async function abrirIntegracoes() {
@@ -462,6 +628,8 @@ Object.assign(window, {
   abrirFicha, abrirFormulario, salvarCliente, salvarInteracao, exportarCliente, excluirCliente,
   iniciarArraste, fimArraste, permitirSolta, sairColuna, soltarCartao,
   criarKey, revogarKey,
+  abrirUsuarios, criarUsuario, abrirEditarUsuario, salvarUsuario,
+  redefinirSenhaUsuario, excluirUsuario, salvarPropriaSenha, fecharModal,
 });
 
 // =================== INICIALIZAÇÃO ===================

@@ -34,13 +34,39 @@ esquecer um follow-up. Pensado para uso individual + integração com agentes de
 - **Hoje** — o que está atrasado e o que fazer hoje (suas próximas ações).
 - **Funil** — quadro Kanban; arraste os cartões entre as 4 etapas.
 - **Clientes** — lista com busca; clique para abrir a ficha completa.
+- **Usuários** (menu do usuário, só admin) — cadastre e gerencie quem acessa o CRM.
 - **Integrações** (menu do usuário, só admin) — crie/revogue chaves de API para a IA.
+- **Trocar minha senha** (menu do usuário, todos) — autoatendimento de senha.
 
 ## Autenticação (dois planos)
 
 **Pessoas (interface):** login com e-mail + senha. A sessão fica em um **cookie httpOnly**
 (o navegador envia sozinho); as escritas exigem um **token CSRF**. Senhas são guardadas com
 hash **bcrypt**. Nenhuma credencial fica no `localStorage`.
+
+## Usuários e papéis
+
+O CRM é **multiusuário**. O primeiro admin nasce do `.env`; os demais são cadastrados na tela
+**Usuários** (menu do usuário → Usuários), sem precisar mexer em arquivo ou script.
+
+| Papel | Usa o CRM (leads, funil, interações) | Gerencia usuários e chaves de API |
+|---|---|---|
+| **admin** | sim | sim |
+| **assistente** | sim | não |
+
+- **Carteira compartilhada:** todos enxergam os mesmos leads. Cada registro continua guardando
+  **quem criou** — humano ou IA — para auditoria.
+- **Senha inicial:** o admin define e combina com a pessoa, que pode trocá-la depois em
+  **Trocar minha senha**. Mínimo de 8 caracteres.
+- **Perdeu o acesso?** O admin redefine a senha em **Usuários → Editar**; todas as sessões
+  daquela pessoa caem na hora.
+- **Trocar a própria senha** encerra as *outras* sessões da conta e mantém a atual.
+- **Proteções:** o sistema recusa excluir a própria conta e recusa excluir ou rebaixar o
+  **último administrador** — não dá para ficar sem quem administre.
+- Mudanças de papel valem **na hora**, sem novo login: o papel é lido do banco a cada requisição.
+
+Excluir um usuário derruba as sessões dele, mas **não** apaga os leads que cadastrou nem revoga
+as chaves de API que criou — revogue-as em **Integrações** se for o caso.
 
 **Máquinas (IA/automações):** **chaves de API** próprias, uma por integração, **revogáveis**,
 enviadas no header `Authorization: Bearer`. Crie-as na tela **Integrações** — a chave é

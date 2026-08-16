@@ -13,7 +13,16 @@ info:
       devolve um token **CSRF** que deve ir no header `X-CSRF-Token` em toda escrita. Escritas
       ficam como `created_by = "humano"`.
 
-    As rotas de **API Keys** (`/api/keys`) exigem **admin via sessão** — uma Bearer key recebe `403`.
+    As rotas de **Usuários** (`/api/usuarios`) e **API Keys** (`/api/keys`) exigem
+    **admin via sessão** — uma Bearer key recebe `403`.
+
+    ## Papéis
+    - **admin** — administra usuários e chaves de API, além de usar o CRM.
+    - **assistente** — usa o CRM inteiro (criar/editar/excluir leads e interações),
+      mas não administra acessos.
+
+    Todos os usuários enxergam a mesma carteira de leads. O papel é lido do banco a cada
+    requisição, então promover ou rebaixar alguém vale na hora, sem precisar de novo login.
 
     ## Servidor MCP
 
@@ -30,6 +39,8 @@ tags:
     description: Clientes / negócios (a entidade "lead" deste CRM)
   - name: Interações
   - name: Agenda
+  - name: Usuários
+    description: Somente admin via sessão
   - name: API Keys
     description: Somente admin via sessão
 
@@ -77,6 +88,128 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '401': { $ref: '#/components/responses/Erro401' }
+
+  /api/auth/senha:
+    put:
+      tags: [Autenticação]
+      summary: Trocar a própria senha
+      description: |
+        Requer sessão (uma Bearer key recebe `403`). Exige a senha atual. Ao trocar, as **outras**
+        sessões do usuário são encerradas; a sessão que fez a chamada continua válida.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrocaSenhaRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403':
+          description: Senha atual incorreta, ou credencial que não é de sessão
+
+  /api/usuarios:
+    get:
+      tags: [Usuários]
+      summary: Listar usuários
+      description: Somente admin via sessão. Nunca devolve o hash da senha.
+      responses:
+        '200':
+          description: Lista de usuários
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Usuario' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Admin' }
+    post:
+      tags: [Usuários]
+      summary: Cadastrar usuário
+      description: |
+        Somente admin via sessão. O admin define a senha inicial (mínimo 8 caracteres) e a
+        combina com a pessoa, que pode trocá-la depois em `PUT /api/auth/senha`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NovoUsuarioRequest' }
+      responses:
+        '201':
+          description: Usuário criado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '403': { $ref: '#/components/responses/Erro403Admin' }
+        '409':
+          description: Já existe um usuário com este e-mail
+
+  /api/usuarios/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      tags: [Usuários]
+      summary: Atualizar nome e/ou papel
+      description: |
+        Somente admin via sessão. O sistema recusa rebaixar o **último** administrador,
+        para nunca ficar sem quem administre.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AtualizaUsuarioRequest' }
+      responses:
+        '200':
+          description: Usuário atualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '403': { $ref: '#/components/responses/Erro403Admin' }
+        '404': { $ref: '#/components/responses/Erro404' }
+    delete:
+      tags: [Usuários]
+      summary: Excluir usuário
+      description: |
+        Somente admin via sessão. As sessões do usuário caem junto. Recusa excluir a própria
+        conta ou o último administrador. Os leads que ele cadastrou continuam no CRM; as chaves
+        de API que ele criou seguem ativas (revogue-as separadamente).
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '403': { $ref: '#/components/responses/Erro403Admin' }
+        '404': { $ref: '#/components/responses/Erro404' }
+
+  /api/usuarios/{id}/senha:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      tags: [Usuários]
+      summary: Redefinir a senha de um usuário
+      description: |
+        Somente admin via sessão — para quando a pessoa perdeu o acesso. **Todas** as sessões
+        dela são encerradas. Não exige a senha antiga (diferente de `PUT /api/auth/senha`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [senha]
+              properties:
+                senha: { type: string, minLength: 8, example: "senhaProvisoria2026" }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '403': { $ref: '#/components/responses/Erro403Admin' }
+        '404': { $ref: '#/components/responses/Erro404' }
 
   /api/clientes:
     get:
@@ -377,17 +510,49 @@ components:
 
     Usuario:
       type: object
+      description: Nunca inclui o hash da senha.
       properties:
         id: { type: integer, example: 1 }
         nome: { type: string, example: "Administrador" }
         email: { type: string, example: "admin@crm.local" }
         papel: { type: string, enum: [admin, assistente], example: admin }
+        created_at:
+          type: string
+          description: Presente na listagem de usuários; ausente na resposta de login.
+          example: "2026-08-16 02:30:58"
 
     LoginResponse:
       type: object
       properties:
         usuario: { $ref: '#/components/schemas/Usuario' }
         csrf: { type: string, description: Enviar em X-CSRF-Token nas escritas via sessão }
+
+    NovoUsuarioRequest:
+      type: object
+      required: [nome, email, senha]
+      properties:
+        nome: { type: string, example: "Maria Souza" }
+        email: { type: string, format: email, example: "maria@empresa.com" }
+        senha: { type: string, format: password, minLength: 8, example: "senhaInicial2026" }
+        papel:
+          type: string
+          enum: [admin, assistente]
+          default: assistente
+          example: assistente
+
+    AtualizaUsuarioRequest:
+      type: object
+      description: Campos omitidos ficam como estão. E-mail e senha não mudam por aqui.
+      properties:
+        nome: { type: string, example: "Maria Souza Lima" }
+        papel: { type: string, enum: [admin, assistente], example: admin }
+
+    TrocaSenhaRequest:
+      type: object
+      required: [senhaAtual, senhaNova]
+      properties:
+        senhaAtual: { type: string, format: password, example: "senhaInicial2026" }
+        senhaNova: { type: string, format: password, minLength: 8, example: "minhaNovaSenha1" }
 
     NovoLead:
       type: object

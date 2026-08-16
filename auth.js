@@ -9,6 +9,21 @@ const COOKIE_NOME = 'crm_sessao';
 const DIAS_SESSAO = 7;
 const ehProducao = process.env.NODE_ENV === 'production';
 
+// Papéis possíveis. `admin` administra usuários e chaves de API; `assistente`
+// usa o CRM inteiro (criar/editar/excluir clientes) mas não administra nada.
+const PAPEIS = ['admin', 'assistente'];
+const SENHA_MINIMA = 8;
+
+// Erro de autenticação/gestão com status HTTP, traduzido pelo handler global do
+// Express (mesmo contrato do ErroDominio do crm-service).
+class ErroAuth extends Error {
+  constructor(mensagem, status = 400) {
+    super(mensagem);
+    this.name = 'ErroAuth';
+    this.status = status;
+  }
+}
+
 // ---------- helpers de senha ----------
 function hashSenha(senha) { return bcrypt.hashSync(senha, 12); }
 function verificarSenha(senha, hash) { return bcrypt.compareSync(senha, hash); }
@@ -34,6 +49,97 @@ function buscarUsuarioPorEmail(email) {
   return db.prepare('SELECT * FROM usuarios WHERE email = ?').get((email || '').toLowerCase().trim());
 }
 function contarUsuarios() { return db.prepare('SELECT COUNT(*) n FROM usuarios').get().n; }
+
+// ---------- gestão de usuários (multiusuário; só admin chega aqui) ----------
+function normalizarEmail(e) { return String(e || '').toLowerCase().trim(); }
+
+function validarEmail(email) {
+  if (!email) throw new ErroAuth('Informe o e-mail');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new ErroAuth('E-mail inválido');
+}
+function validarSenha(senha) {
+  if (!senha || String(senha).length < SENHA_MINIMA) {
+    throw new ErroAuth(`A senha precisa de pelo menos ${SENHA_MINIMA} caracteres`);
+  }
+}
+function validarPapel(papel) {
+  if (!PAPEIS.includes(papel)) throw new ErroAuth('Papel inválido');
+}
+
+// Nunca devolve senha_hash.
+function listarUsuarios() {
+  return db.prepare('SELECT id, nome, email, papel, created_at FROM usuarios ORDER BY id ASC').all();
+}
+function obterUsuario(id) {
+  const u = db.prepare('SELECT id, nome, email, papel, created_at FROM usuarios WHERE id = ?').get(id);
+  if (!u) throw new ErroAuth('Usuário não encontrado', 404);
+  return u;
+}
+function contarAdmins() {
+  return db.prepare("SELECT COUNT(*) n FROM usuarios WHERE papel = 'admin'").get().n;
+}
+
+function cadastrarUsuario({ nome, email, senha, papel = 'assistente' }) {
+  const nomeLimpo = String(nome || '').trim();
+  const emailLimpo = normalizarEmail(email);
+  if (!nomeLimpo) throw new ErroAuth('Informe o nome');
+  validarEmail(emailLimpo);
+  validarSenha(senha);
+  validarPapel(papel);
+  if (db.prepare('SELECT 1 FROM usuarios WHERE email = ?').get(emailLimpo)) {
+    throw new ErroAuth('Já existe um usuário com este e-mail', 409);
+  }
+  return criarUsuario({ nome: nomeLimpo, email: emailLimpo, senha, papel });
+}
+
+// Altera nome e/ou papel. O papel é lido do banco a cada requisição (obterSessao
+// faz JOIN em usuarios), então a mudança vale na hora, sem derrubar a sessão.
+function atualizarUsuario(id, { nome, papel }) {
+  const u = obterUsuario(id);
+  const novoNome = nome === undefined ? u.nome : String(nome).trim();
+  const novoPapel = papel === undefined ? u.papel : papel;
+  if (!novoNome) throw new ErroAuth('Informe o nome');
+  validarPapel(novoPapel);
+  if (u.papel === 'admin' && novoPapel !== 'admin' && contarAdmins() <= 1) {
+    throw new ErroAuth('Este é o último administrador — promova outro antes de rebaixá-lo');
+  }
+  db.prepare('UPDATE usuarios SET nome = ?, papel = ? WHERE id = ?').run(novoNome, novoPapel, u.id);
+  return obterUsuario(u.id);
+}
+
+// Admin redefine a senha de alguém: derruba TODAS as sessões desse usuário.
+function redefinirSenha(id, senha) {
+  const u = obterUsuario(id);
+  validarSenha(senha);
+  db.prepare('UPDATE usuarios SET senha_hash = ? WHERE id = ?').run(hashSenha(senha), u.id);
+  db.prepare('DELETE FROM sessoes WHERE usuario_id = ?').run(u.id);
+  return { ok: true };
+}
+
+// Troca da própria senha: exige a senha atual e mantém apenas a sessão em uso
+// (as outras caem — se a senha vazou, o invasor perde o acesso).
+function trocarPropriaSenha(usuarioId, { senhaAtual, senhaNova }, tokenAtual) {
+  const u = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(usuarioId);
+  if (!u) throw new ErroAuth('Usuário não encontrado', 404);
+  if (!verificarSenha(senhaAtual || '', u.senha_hash)) throw new ErroAuth('Senha atual incorreta', 403);
+  validarSenha(senhaNova);
+  if (senhaNova === senhaAtual) throw new ErroAuth('A nova senha precisa ser diferente da atual');
+  db.prepare('UPDATE usuarios SET senha_hash = ? WHERE id = ?').run(hashSenha(senhaNova), u.id);
+  db.prepare('DELETE FROM sessoes WHERE usuario_id = ? AND token != ?').run(u.id, tokenAtual || '');
+  return { ok: true };
+}
+
+// Exclui um usuário. As sessões caem por ON DELETE CASCADE e as chaves de API
+// que ele criou continuam válidas (criada_por vira NULL) — revogue-as à parte.
+function excluirUsuario(id, solicitanteId) {
+  const u = obterUsuario(id);
+  if (Number(u.id) === Number(solicitanteId)) throw new ErroAuth('Você não pode excluir a própria conta');
+  if (u.papel === 'admin' && contarAdmins() <= 1) {
+    throw new ErroAuth('Não é possível excluir o último administrador');
+  }
+  db.prepare('DELETE FROM usuarios WHERE id = ?').run(u.id);
+  return { ok: true, removido: u.id };
+}
 
 // ---------- sessões ----------
 function criarSessao(usuarioId) {
@@ -175,8 +281,10 @@ function bootstrapAdmin() {
 }
 
 module.exports = {
-  COOKIE_NOME, verificarSenha,
+  COOKIE_NOME, PAPEIS, SENHA_MINIMA, ErroAuth, verificarSenha,
   criarUsuario, buscarUsuarioPorEmail, contarUsuarios,
+  listarUsuarios, obterUsuario, cadastrarUsuario, atualizarUsuario,
+  redefinirSenha, trocarPropriaSenha, excluirUsuario,
   criarSessao, obterSessao, destruirSessao, setCookieSessao, limparCookieSessao,
   criarApiKey, listarApiKeys, revogarApiKey,
   requireAuth, csrfProtect, requireAdmin, bootstrapAdmin,

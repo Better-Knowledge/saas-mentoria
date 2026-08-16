@@ -182,3 +182,58 @@ para endurecer a CSP (tirar `'unsafe-inline'` de script); política formal de re
 
 **Conclusão:** sem achados críticos. O acesso MCP está alinhado aos Princípios II e IV e pronto para
 produção atrás do Traefik (TLS). Pendência herdada: política formal de retenção LGPD (igual à API).
+
+---
+
+## Multiusuário (cadastro pela interface) — revisão de segurança 16/08/2026
+
+> Escopo: rotas `/api/usuarios*` e `PUT /api/auth/senha` em `server.js`, funções de gestão em
+> `auth.js`, telas **Usuários** e **Trocar minha senha** em `public/app.js`.
+> Fecha o item deixado em aberto na recomendação central: *"papéis/perfis (admin, assistente)
+> para o multiusuário futuro"*.
+
+### Modelo adotado
+
+Carteira **compartilhada** (todos veem os mesmos leads) com dois papéis: **admin** administra
+usuários e chaves de API; **assistente** usa o CRM inteiro mas não administra acessos.
+
+| Verificação | Resultado |
+|---|---|
+| Toda rota de usuários exige admin **via sessão** | ✅ `requireAuth` + `requireAdmin`; assistente e Bearer key → `403` (testado) |
+| Escritas protegidas contra CSRF | ✅ `csrfProtect` em POST/PUT/DELETE; sem header → `403` (testado) |
+| Hash da senha nunca sai da API | ✅ todos os `SELECT` de usuário listam colunas explícitas, sem `senha_hash` |
+| Senha nova passa por bcrypt | ✅ mesmo `hashSenha` (custo 12) do login |
+| Política mínima de senha | ✅ 8 caracteres, validado no servidor (a interface só antecipa a mensagem) |
+| Troca da própria senha exige a senha atual | ✅ `403` com a senha errada (testado) |
+| Redefinição por admin derruba as sessões do alvo | ✅ `DELETE FROM sessoes WHERE usuario_id` → sessão anterior vira `401` (testado) |
+| Troca da própria senha derruba as **outras** sessões | ✅ mantém só o token em uso — se a senha vazou, o invasor cai (testado) |
+| Exclusão de usuário encerra o acesso na hora | ✅ sessões caem por `ON DELETE CASCADE` |
+| Mudança de papel vale imediatamente | ✅ `obterSessao` faz JOIN em `usuarios` a cada requisição; rebaixado perde `/api/usuarios` sem relogin (testado) |
+| Sem SQL injection | ✅ prepared statements em todas as consultas novas |
+| Escalada de privilégio pela interface | ✅ esconder itens do menu é só conveniência; a autorização é sempre do servidor (testado com sessão de assistente) |
+
+### Proteções contra "tiro no pé"
+
+- Recusa **excluir a própria conta**.
+- Recusa **excluir ou rebaixar o último administrador** — o sistema nunca fica sem quem administre.
+- E-mail é normalizado (minúsculas, sem espaços) e é `UNIQUE` no schema; duplicata → `409`.
+
+### Observações e decisões
+
+- **Senha inicial definida pelo admin** (decisão de produto), combinada fora da ferramenta. Não há
+  envio de e-mail nem link de convite — não existe SMTP no projeto. A pessoa troca depois em
+  **Trocar minha senha**.
+- **Sem troca obrigatória no primeiro login**: avaliado e adiado; exigiria coluna de controle e um
+  passo extra no fluxo. Enquanto isso, a senha inicial é conhecida pelo admin — trate-a como
+  provisória.
+- **Rate limiting do login** continua o mesmo (10/15min por IP) e agora protege todas as contas.
+- **Corrigido no caminho:** ao sair (ou a sessão expirar), o modal aberto permanecia visível sobre
+  a tela de login — deixando a lista de usuários ou os prefixos de chaves à mostra para quem
+  usasse o navegador em seguida. `mostrarLogin()` passou a fechar o modal e limpar `USUARIO`/`CSRF`
+  da memória. O bug era anterior a esta mudança (afetava a tela de Integrações).
+- **Pendência:** excluir um usuário **não** revoga as chaves de API que ele criou (`criada_por`
+  vira `NULL` por `ON DELETE SET NULL`). É intencional — a chave pertence à integração, não à
+  pessoa — mas exige revogação manual em **Integrações** no desligamento de alguém.
+
+**Conclusão:** sem achados críticos. A autorização é consistentemente do lado do servidor e as
+proteções de sessão acompanham as mudanças de senha e de papel.
