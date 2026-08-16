@@ -35,6 +35,7 @@
     </div>
     <nav class="abas">
       <button class="aba ativa" data-tela="hoje">Hoje</button>
+      <button class="aba" data-tela="dashboard">Dashboard</button>
       <button class="aba" data-tela="funil">Funil</button>
       <button class="aba" data-tela="clientes">Clientes</button>
     </nav>
@@ -74,6 +75,33 @@
       <div class="bloco">
         <h2 class="bloco-titulo"><span class="ponto"></span> Próximos</h2>
         <div id="lista-futuros" class="lista"></div>
+      </div>
+    </section>
+
+    <!-- TELA DASHBOARD -->
+    <section id="tela-dashboard" class="tela">
+      <div class="cabecalho-tela">
+        <span class="eyebrow">Visão geral</span>
+        <h1 class="display-tela">Seus <em>números</em></h1>
+        <p class="sub">Do resultado consolidado até o que precisa de ação esta semana.</p>
+      </div>
+
+      <div id="dash-aviso"></div>
+      <div class="resumo" id="dash-kpis"></div>
+
+      <div class="bloco">
+        <h2 class="bloco-titulo"><span class="ponto"></span> Evolução</h2>
+        <div class="dash-grid" id="dash-evolucao"></div>
+      </div>
+
+      <div class="bloco">
+        <h2 class="bloco-titulo"><span class="ponto"></span> Composição</h2>
+        <div class="dash-grid" id="dash-composicao"></div>
+      </div>
+
+      <div class="bloco">
+        <h2 class="bloco-titulo atrasado"><span class="ponto"></span> Precisa de atenção</h2>
+        <div class="dash-grid" id="dash-atencao"></div>
       </div>
     </section>
 

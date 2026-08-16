@@ -168,6 +168,11 @@ app.get('/api/hoje', auth.requireAuth, (req, res) => {
   res.json(crm.acoesHoje());
 });
 
+// =================== DASHBOARD ===================
+app.get('/api/dashboard', auth.requireAuth, (req, res) => {
+  res.json(crm.dashboard());
+});
+
 // ---- documentação da API (Swagger UI + spec cru) ----
 app.get('/openapi.yaml', (req, res) => {
   res.type('text/yaml').sendFile(path.join(__dirname, 'openapi.yaml'));

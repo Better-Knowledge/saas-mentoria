@@ -19,9 +19,26 @@ class ErroDominio extends Error {
   }
 }
 
+// Peso de cada etapa no pipeline ponderado (previsão realista em vez da soma bruta:
+// um lead recém-chegado de R$ 90 mil não vale R$ 90 mil). Ajuste conforme sua taxa real.
+const PESO_ETAPA = { novo: 0.10, qualificacao: 0.25, reuniao: 0.50, proposta: 0.75 };
+const DIAS_PARADO = 30; // sem qualquer movimentação => lead esquecido
+
 // Normaliza o autor para os únicos valores válidos de auditoria.
 function normAutor(autor) {
   return autor === 'ia' ? 'ia' : 'humano';
+}
+
+function hojeISO() { return new Date().toLocaleDateString('en-CA'); } // YYYY-MM-DD
+
+// Data do desfecho, derivada da transição de `resultado` — nunca vem do cliente.
+//   em_aberto  -> ganho/perdido : carimba hoje
+//   ganho/perdido -> em_aberto  : reabriu, limpa a data
+//   ganho <-> perdido           : só corrigiu o desfecho, mantém a data original
+function calcFechadoEm(anterior, novo, atual) {
+  if (anterior === novo) return atual || null;
+  if (novo === 'em_aberto') return null;
+  return atual || hojeISO();
 }
 
 // Whitelist de campos (sem mass assignment). created_by/gerado_por_ia NUNCA vêm daqui.
@@ -66,11 +83,18 @@ function criarCliente(body, autor) {
   const info = db.prepare(`
     INSERT INTO clientes
       (nome, empresa, cargo, telefone, email, tipo_cliente, origem, etapa, resultado,
-       valor_estimado, proposta_enviada, status_pagamento, proxima_acao, proxima_acao_data, created_by)
+       valor_estimado, proposta_enviada, status_pagamento, proxima_acao, proxima_acao_data,
+       created_by, fechado_em)
     VALUES
       (@nome, @empresa, @cargo, @telefone, @email, @tipo_cliente, @origem, @etapa, @resultado,
-       @valor_estimado, @proposta_enviada, @status_pagamento, @proxima_acao, @proxima_acao_data, @created_by)
-  `).run({ ...c, created_by: normAutor(autor) });
+       @valor_estimado, @proposta_enviada, @status_pagamento, @proxima_acao, @proxima_acao_data,
+       @created_by, @fechado_em)
+  `).run({
+    ...c,
+    created_by: normAutor(autor),
+    // lead cadastrado já fechado (acontece via API/MCP) nasce com a data do desfecho
+    fechado_em: calcFechadoEm('em_aberto', c.resultado, null),
+  });
   return db.prepare('SELECT * FROM clientes WHERE id = ?').get(info.lastInsertRowid);
 }
 
@@ -84,21 +108,29 @@ function atualizarCliente(id, body) {
       tipo_cliente=@tipo_cliente, origem=@origem, etapa=@etapa, resultado=@resultado,
       valor_estimado=@valor_estimado, proposta_enviada=@proposta_enviada,
       status_pagamento=@status_pagamento, proxima_acao=@proxima_acao,
-      proxima_acao_data=@proxima_acao_data, updated_at=datetime('now','localtime')
+      proxima_acao_data=@proxima_acao_data, fechado_em=@fechado_em,
+      updated_at=datetime('now','localtime')
     WHERE id=@id
-  `).run({ ...c, id });
+  `).run({
+    ...c, id,
+    fechado_em: calcFechadoEm(existente.resultado, c.resultado, existente.fechado_em),
+  });
   return db.prepare('SELECT * FROM clientes WHERE id = ?').get(id);
 }
 
 function moverEtapa(id, { etapa, resultado } = {}) {
   if (etapa && !ETAPAS.includes(etapa)) throw new ErroDominio('Etapa invalida', 400);
   if (resultado && !RESULTADOS.includes(resultado)) throw new ErroDominio('Resultado invalido', 400);
-  const existente = db.prepare('SELECT id FROM clientes WHERE id = ?').get(id);
+  const existente = db.prepare('SELECT id, resultado, fechado_em FROM clientes WHERE id = ?').get(id);
   if (!existente) throw new ErroDominio('Cliente nao encontrado', 404);
+  // arrastar o cartão no funil também pode fechar/reabrir o negócio
+  const fechadoEm = calcFechadoEm(
+    existente.resultado, resultado || existente.resultado, existente.fechado_em
+  );
   db.prepare(`
     UPDATE clientes SET etapa = COALESCE(?, etapa), resultado = COALESCE(?, resultado),
-      updated_at = datetime('now','localtime') WHERE id = ?
-  `).run(etapa || null, resultado || null, id);
+      fechado_em = ?, updated_at = datetime('now','localtime') WHERE id = ?
+  `).run(etapa || null, resultado || null, fechadoEm, id);
   return db.prepare('SELECT * FROM clientes WHERE id = ?').get(id);
 }
 
@@ -133,6 +165,134 @@ function excluirCliente(id) {
   return { ok: true, removido: Number(id) };
 }
 
+// =================== DASHBOARD ===================
+// Uma única leitura agregada para a tela. Tudo é derivado do banco na hora —
+// não há tabela de métricas para ficar dessincronizada.
+function dashboard({ meses = 12 } = {}) {
+  const hojeStr = hojeISO();
+
+  // ---- camada 1: KPIs ----
+  const abertos = db.prepare(`
+    SELECT etapa, COUNT(*) qtd, COALESCE(SUM(valor_estimado),0) valor
+    FROM clientes WHERE resultado = 'em_aberto' GROUP BY etapa
+  `).all();
+  const pipelineValor = abertos.reduce((s, e) => s + e.valor, 0);
+  const pipelineQtd = abertos.reduce((s, e) => s + e.qtd, 0);
+  const pipelinePonderado = abertos.reduce((s, e) => s + e.valor * (PESO_ETAPA[e.etapa] ?? 0), 0);
+
+  const fechados = db.prepare(`
+    SELECT resultado, COUNT(*) qtd, COALESCE(SUM(valor_estimado),0) valor
+    FROM clientes WHERE resultado != 'em_aberto' GROUP BY resultado
+  `).all();
+  const ganhos = fechados.find(f => f.resultado === 'ganho') || { qtd: 0, valor: 0 };
+  const perdidos = fechados.find(f => f.resultado === 'perdido') || { qtd: 0, valor: 0 };
+  const totalFechados = ganhos.qtd + perdidos.qtd;
+
+  // ciclo de vendas: só dá para medir onde existe data de desfecho
+  const ciclo = db.prepare(`
+    SELECT AVG(julianday(fechado_em) - julianday(date(created_at))) dias, COUNT(*) base
+    FROM clientes
+    WHERE resultado = 'ganho' AND fechado_em IS NOT NULL AND fechado_em >= date(created_at)
+  `).get();
+
+  // ---- camada 2: evolução mensal (série contínua, meses vazios inclusos) ----
+  const porMesFechado = db.prepare(`
+    SELECT substr(fechado_em,1,7) mes, resultado,
+           COUNT(*) qtd, COALESCE(SUM(valor_estimado),0) valor
+    FROM clientes WHERE fechado_em IS NOT NULL GROUP BY mes, resultado
+  `).all();
+  const porMesCriado = db.prepare(`
+    SELECT substr(created_at,1,7) mes, COUNT(*) qtd FROM clientes GROUP BY mes
+  `).all();
+
+  const serie = [];
+  const [anoHoje, mesHoje] = hojeStr.split('-').map(Number);
+  for (let i = meses - 1; i >= 0; i--) {
+    const d = new Date(anoHoje, mesHoje - 1 - i, 1);
+    const chave = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const g = porMesFechado.find(r => r.mes === chave && r.resultado === 'ganho');
+    const p = porMesFechado.find(r => r.mes === chave && r.resultado === 'perdido');
+    const n = porMesCriado.find(r => r.mes === chave);
+    serie.push({
+      mes: chave,
+      ganhos: g ? g.qtd : 0, valorGanho: g ? g.valor : 0,
+      perdidos: p ? p.qtd : 0, valorPerdido: p ? p.valor : 0,
+      novos: n ? n.qtd : 0,
+    });
+  }
+
+  // ---- camada 3: composição ----
+  const funil = ETAPAS.map(etapa => {
+    const e = abertos.find(a => a.etapa === etapa);
+    return {
+      etapa, qtd: e ? e.qtd : 0, valor: e ? e.valor : 0,
+      peso: PESO_ETAPA[etapa], ponderado: (e ? e.valor : 0) * PESO_ETAPA[etapa],
+    };
+  });
+
+  // origem medida por valor GANHO, não por volume de leads: 3 indicações que
+  // fecham valem mais que 20 cliques que não fecham
+  const origens = db.prepare(`
+    SELECT COALESCE(NULLIF(TRIM(origem),''), 'Sem origem') origem,
+           COUNT(*) qtd,
+           SUM(CASE WHEN resultado = 'ganho' THEN 1 ELSE 0 END) ganhos,
+           COALESCE(SUM(CASE WHEN resultado = 'ganho' THEN valor_estimado ELSE 0 END),0) valorGanho,
+           COALESCE(SUM(CASE WHEN resultado = 'em_aberto' THEN valor_estimado ELSE 0 END),0) valorAberto
+    FROM clientes GROUP BY origem ORDER BY valorGanho DESC, qtd DESC
+  `).all();
+
+  const tipos = db.prepare(`
+    SELECT tipo_cliente tipo, COUNT(*) qtd, COALESCE(SUM(valor_estimado),0) valor
+    FROM clientes GROUP BY tipo_cliente ORDER BY qtd DESC
+  `).all();
+
+  const autoria = db.prepare(`
+    SELECT created_by autor, COUNT(*) qtd FROM clientes GROUP BY created_by
+  `).all();
+
+  // ---- camada 4: listas de ação ----
+  const colunas = 'id, nome, empresa, etapa, valor_estimado, proxima_acao, proxima_acao_data, updated_at';
+  const semProximaAcao = db.prepare(`
+    SELECT ${colunas} FROM clientes
+    WHERE resultado = 'em_aberto' AND (proxima_acao_data IS NULL OR proxima_acao_data = '')
+    ORDER BY valor_estimado DESC
+  `).all();
+  const parados = db.prepare(`
+    SELECT ${colunas}, CAST(julianday('now') - julianday(updated_at) AS INTEGER) dias
+    FROM clientes
+    WHERE resultado = 'em_aberto' AND julianday('now') - julianday(updated_at) >= ?
+    ORDER BY updated_at ASC
+  `).all(DIAS_PARADO);
+  const propostasAbertas = db.prepare(`
+    SELECT ${colunas} FROM clientes
+    WHERE resultado = 'em_aberto' AND proposta_enviada = 1
+    ORDER BY valor_estimado DESC
+  `).all();
+
+  return {
+    kpis: {
+      pipeline: { valor: pipelineValor, qtd: pipelineQtd },
+      ponderado: { valor: pipelinePonderado },
+      vitoria: {
+        pct: totalFechados ? (ganhos.qtd / totalFechados) * 100 : null,
+        ganhos: ganhos.qtd, perdidos: perdidos.qtd,
+      },
+      ticketMedio: { valor: ganhos.qtd ? ganhos.valor / ganhos.qtd : null, base: ganhos.qtd },
+      cicloDias: ciclo && ciclo.base ? Math.round(ciclo.dias) : null,
+      receitaGanha: ganhos.valor,
+    },
+    serie,
+    funil,
+    origens,
+    tipos,
+    autoria: {
+      humano: (autoria.find(a => a.autor === 'humano') || {}).qtd || 0,
+      ia: (autoria.find(a => a.autor === 'ia') || {}).qtd || 0,
+    },
+    atencao: { semProximaAcao, parados, propostasAbertas, diasParado: DIAS_PARADO },
+  };
+}
+
 function acoesHoje() {
   const todas = db.prepare(`
     SELECT id, nome, empresa, etapa, valor_estimado, proxima_acao, proxima_acao_data
@@ -150,7 +310,8 @@ function acoesHoje() {
 }
 
 module.exports = {
-  ETAPAS, RESULTADOS, ErroDominio, montaCliente,
+  ETAPAS, RESULTADOS, PESO_ETAPA, ErroDominio, montaCliente,
   listarClientes, obterCliente, criarCliente, atualizarCliente, moverEtapa,
   listarInteracoes, registrarInteracao, exportarCliente, excluirCliente, acoesHoje,
+  dashboard,
 };
