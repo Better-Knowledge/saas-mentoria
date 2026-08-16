@@ -32,7 +32,7 @@ para a pessoa; o MCP/REST é para a IA.
 
 Equivalente por API (sessão admin): `POST /api/keys` e `DELETE /api/keys/:id`.
 
-## Ferramentas (10) — paridade total com a API
+## Ferramentas (11) — paridade total com a API
 
 | Ferramenta | O que faz | Escrita? |
 |---|---|:--:|
@@ -40,6 +40,7 @@ Equivalente por API (sessão admin): `POST /api/keys` e `DELETE /api/keys/:id`.
 | `obter_cliente` | Ficha completa + histórico | — |
 | `acoes_hoje` | Follow-ups atrasados / hoje / futuros | — |
 | `listar_interacoes` | Histórico de um cliente | — |
+| `metricas` | Métricas do negócio (mesma fonte da tela Dashboard) | — |
 | `criar_cliente` | Cria lead (só `nome` obrigatório) | ✍️ |
 | `atualizar_cliente` | Edita dados do cliente | ✍️ |
 | `mover_etapa` | Move no funil / define resultado | ✍️ |
@@ -48,16 +49,33 @@ Equivalente por API (sessão admin): `POST /api/keys` e `DELETE /api/keys/:id`.
 | `excluir_cliente` | Exclui o cliente (LGPD) — **irreversível** | ✍️🗑️ |
 
 Contrato detalhado (schemas de entrada, anotações) em
-[`specs/001-mcp-server-auth/contracts/mcp-tools.md`](../specs/001-mcp-server-auth/contracts/mcp-tools.md).
+[`specs/001-mcp-server-auth/contracts/mcp-tools.md`](../specs/001-mcp-server-auth/contracts/mcp-tools.md)
+— aquele documento descreve as 10 ferramentas originais; `metricas` foi acrescentada depois,
+junto com a tela Dashboard, e sua fonte é [`mcp/tools.mjs`](../mcp/tools.mjs).
 As operações destrutivas (`excluir_cliente`, `atualizar_cliente`, `mover_etapa`) trazem
 `destructiveHint`, para o cliente de IA pedir confirmação quando apropriado.
+
+### `metricas` — o que devolve
+
+Sem parâmetros, somente leitura. Payload **idêntico** ao de `GET /api/dashboard` (verificado):
+`kpis` (pipeline em aberto, pipeline ponderado, taxa de vitória, ticket médio, ciclo médio,
+receita ganha), `serie` com 12 meses de ganhos/perdidos/novos, `funil` por etapa, `origens`
+ordenadas por valor ganho, `tipos`, `autoria` (humano × IA) e `atencao` com as listas acionáveis.
+
+Serve para o agente responder sobre desempenho, previsão de receita e o que precisa de follow-up
+sem ter que listar todos os clientes e agregar por conta própria.
+
+### Gestão de usuários **não** é exposta por MCP
+
+É deliberado. As rotas `/api/usuarios` exigem **admin via sessão**; uma chave Bearer recebe `403`.
+Máquinas operam o CRM, não administram contas humanas.
 
 ## Como conectar
 
 ### MCP Inspector (recomendado)
 
 Aponte para `https://…/mcp` (ou `http://localhost:3000/mcp` em dev) com o header
-`Authorization: Bearer <CHAVE>`. O Inspector mostra as 10 ferramentas e permite chamá-las.
+`Authorization: Bearer <CHAVE>`. O Inspector mostra as 11 ferramentas e permite chamá-las.
 
 ### JSON-RPC direto (curl)
 

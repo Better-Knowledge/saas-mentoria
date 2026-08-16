@@ -144,6 +144,26 @@ derivada da credencial — não de um header).
 > A lógica de negócio (validação, whitelist, auditoria) vive em [`crm-service.js`](crm-service.js),
 > compartilhada pela API REST **e** pelo servidor MCP, para que os dois caminhos se comportem igual.
 
+## Documentação da API
+
+Documentação interativa em **[`/docs`](http://localhost:3000/docs)**, gerada com **Scalar** a partir
+do [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0.3). O spec cru fica em `/openapi.yaml`.
+
+Dá para testar as rotas pela própria página: o botão **Authorize** já vem apontando para a chave
+de API (`bearerAuth`), o caminho das automações.
+
+Duas decisões que valem conhecer antes de mexer:
+
+- **O bundle do Scalar é servido pelo próprio app** (`/docs/scalar.js`, a partir do `node_modules`),
+  nunca de CDN. A CSP permite só `'self'` em `script-src`, e afrouxá-la para uma página de
+  documentação não se justificaria.
+- **As fontes remotas do Scalar ficam desligadas** (`withDefaultFonts: false`); a página usa a mesma
+  Inter do app. O Scalar também tenta consultar o catálogo de APIs públicas dele em
+  `api.scalar.com` — a CSP bloqueia, e deve continuar bloqueando. Isso gera dois erros no console
+  da página; **não libere `connect-src` para silenciá-los**.
+
+O caminho antigo `/api-docs` (Swagger UI) redireciona para `/docs` com `301`.
+
 ## Servidor MCP (agentes de IA remotos)
 
 Além da API REST, o CRM expõe um **servidor MCP** (Model Context Protocol) em `POST /mcp`
@@ -152,9 +172,14 @@ autenticado**: a mesma **chave de API** (header `Authorization: Bearer`) emitida
 **Integrações** — sem credencial válida, `401`. As ações de escrita ficam marcadas como
 **geradas por IA** (derivado da credencial).
 
-São **10 ferramentas** com paridade total à API: `listar_clientes`, `obter_cliente`, `acoes_hoje`,
-`listar_interacoes`, `criar_cliente`, `atualizar_cliente`, `mover_etapa`, `registrar_interacao`,
-`exportar_cliente`, `excluir_cliente`. Detalhes em [docs/MCP.md](docs/MCP.md).
+São **11 ferramentas** com paridade total à API: `listar_clientes`, `obter_cliente`, `acoes_hoje`,
+`listar_interacoes`, `metricas`, `criar_cliente`, `atualizar_cliente`, `mover_etapa`,
+`registrar_interacao`, `exportar_cliente`, `excluir_cliente`. Detalhes em [docs/MCP.md](docs/MCP.md).
+
+`metricas` devolve o mesmo payload de `GET /api/dashboard`, para o agente responder sobre
+desempenho e previsão sem listar todos os clientes e agregar por conta própria. Gestão de
+usuários **não** é exposta por MCP, de propósito: exige admin via sessão, e uma chave Bearer
+recebe `403` — máquinas operam o CRM, não administram contas humanas.
 
 ```bash
 # descobrir as ferramentas disponíveis
@@ -182,4 +207,5 @@ prepared statements (sem SQL injection) e handler global de erros. Detalhes em [
 
 ## Stack
 
-Node.js + Express · SQLite (`better-sqlite3`) · bcryptjs · helmet · `@modelcontextprotocol/sdk` (servidor MCP) · HTML/CSS/JS puro.
+Node.js + Express · SQLite (`better-sqlite3`) · bcryptjs · helmet · `@modelcontextprotocol/sdk` (servidor MCP) ·
+`@scalar/api-reference` (documentação em `/docs`) · HTML/CSS/JS puro.
