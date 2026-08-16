@@ -3,7 +3,7 @@
 CRM simples e sob medida para centralizar clientes, acompanhar o funil de vendas e nunca
 esquecer um follow-up. Pensado para uso individual + integração com agentes de IA via API.
 
-📄 Documentos: [PRD](docs/PRD.md) · [Avaliação de Segurança](docs/SEGURANCA.md) · [Estimativa de Desenvolvimento](docs/ESTIMATIVA-DESENVOLVIMENTO.md)
+📄 Documentos: [PRD da Reconstrução](docs/PRD-Reconstrucao-CRM.md) · [PRD da Aula](docs/PRD-Aula-CRM.md) · [Design System](docs/DESIGN-SYSTEM.md) · [Roadmap](docs/ROADMAP.md) · [Avaliação de Segurança](docs/SEGURANCA.md) · [Estimativa de Desenvolvimento](docs/ESTIMATIVA-DESENVOLVIMENTO.md) · [PRD v1](docs/PRD.md)
 
 ## Como rodar
 
