@@ -7,13 +7,21 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const yaml = require('js-yaml');
-const swaggerUi = require('swagger-ui-express');
 const db = require('./db');
 const auth = require('./auth');
 const crm = require('./crm-service'); // lógica de domínio compartilhada por REST e MCP
 
-// Spec OpenAPI (carregado do openapi.yaml na raiz do projeto)
+// Spec OpenAPI (carregado do openapi.yaml na raiz do projeto) — só para validar
+// no boot que o arquivo está íntegro; o Scalar consome o YAML direto de /openapi.yaml.
 const openapiSpec = yaml.load(fs.readFileSync(path.join(__dirname, 'openapi.yaml'), 'utf8'));
+
+// Bundle do Scalar servido pelo próprio app (nunca de CDN): a CSP permite apenas
+// 'self' em script-src, e afrouxá-la só para a documentação não se justifica.
+// O caminho é derivado do entrypoint do pacote porque o campo "exports" dele
+// não publica subcaminhos — require.resolve('@scalar/api-reference/...') falharia.
+const SCALAR_BUNDLE = path.join(
+  path.dirname(require.resolve('@scalar/api-reference')), 'browser', 'standalone.js'
+);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -173,13 +181,61 @@ app.get('/api/dashboard', auth.requireAuth, (req, res) => {
   res.json(crm.dashboard());
 });
 
-// ---- documentação da API (Swagger UI + spec cru) ----
+// ---- documentação da API: Scalar em /docs (+ spec cru em /openapi.yaml) ----
 app.get('/openapi.yaml', (req, res) => {
   res.type('text/yaml').sendFile(path.join(__dirname, 'openapi.yaml'));
 });
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
-  customSiteTitle: 'Mini CRM — API',
-}));
+
+// Bundle local do Scalar. Imutável por versão do pacote, então cacheia forte.
+app.get('/docs/scalar.js', (req, res) => {
+  res.type('application/javascript');
+  res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+  res.sendFile(SCALAR_BUNDLE);
+});
+
+// Nota sobre o console desta página: o Scalar tenta consultar o registry dele
+// (api.scalar.com/vector/registry/*), um catálogo de APIs públicas que não serve
+// para nada numa doc auto-hospedada. A CSP bloqueia — e deve continuar bloqueando.
+// Os dois erros no console são o efeito visível disso; NÃO libere connect-src
+// para silenciá-los: seria abrir a doc para um terceiro sem ganho nenhum.
+app.get('/docs', (req, res) => {
+  res.type('html').send(`<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${openapiSpec.info.title} — Documentação</title>
+  <!-- Mesma Inter do app, de uma origem que a CSP já permite. O Scalar buscaria
+       as próprias fontes em fonts.scalar.com, que a CSP bloqueia (e que vazaria
+       o IP de quem lê a doc) — por isso withDefaultFonts: false abaixo. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root { --scalar-font: 'Inter', system-ui, sans-serif; --scalar-font-code: 'JetBrains Mono', monospace; }
+    body { margin: 0; font-family: var(--scalar-font); }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="/docs/scalar.js"></script>
+  <script>
+    Scalar.createApiReference('#app', {
+      url: '/openapi.yaml',
+      theme: 'default',
+      withDefaultFonts: false,
+      documentDownloadType: 'yaml',
+      // pré-seleciona a chave de API no botão Authorize (caminho de automação).
+      // persistAuth fica desligado de propósito: nada de credencial no localStorage.
+      authentication: { preferredSecurityScheme: 'bearerAuth' },
+    });
+  </script>
+</body>
+</html>`);
+});
+
+// caminho antigo do Swagger UI — mantido para não quebrar links já compartilhados
+app.get('/api-docs', (req, res) => res.redirect(301, '/docs'));
 
 // ---- bootstrap assíncrono: monta o servidor MCP (ESM) e só então estáticos + erro + listen ----
 async function iniciar() {

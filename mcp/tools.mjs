@@ -54,6 +54,21 @@ export const TOOLS = [
     annotations: { title: 'Listar interações', readOnlyHint: true, openWorldHint: false },
     run: (crm, autor, { id }) => crm.listarInteracoes(id),
   },
+  {
+    name: 'metricas',
+    description:
+      'Métricas consolidadas do negócio (mesma fonte da tela Dashboard). Retorna: '
+      + '`kpis` (pipeline em aberto, pipeline ponderado pelo peso de cada etapa, taxa de vitória, '
+      + 'ticket médio, ciclo médio em dias, receita ganha); '
+      + '`serie` com os últimos 12 meses de ganhos/perdidos/novos leads; '
+      + '`funil` com valor parado por etapa; `origens` ordenadas por valor ganho; `tipos`; '
+      + '`autoria` (leads criados por humano x IA); e `atencao` com as listas acionáveis '
+      + '(sem próxima ação agendada, parados há 30+ dias, propostas enviadas em aberto). '
+      + 'Use para responder perguntas sobre desempenho, previsão de receita e o que precisa de follow-up.',
+    inputSchema: {},
+    annotations: { title: 'Métricas do negócio', readOnlyHint: true, openWorldHint: false },
+    run: (crm) => crm.dashboard(),
+  },
 
   // ----- Escrita (auditada como 'ia') -----
   {
