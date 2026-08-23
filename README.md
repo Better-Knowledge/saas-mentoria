@@ -298,8 +298,7 @@ Node.js + Express · SQLite (`better-sqlite3`) · bcryptjs · helmet · `@modelc
 
 ## Licença
 
-Licenciado sob a **Apache License, Versão 2.0** — texto completo em [LICENSE](LICENSE),
-atribuição em [NOTICE](NOTICE).
+Licenciado sob a **licença MIT** — texto completo em [LICENSE](LICENSE).
 
-Copyright 2026 Fernando Melo Faraco · <fernando.faraco@better-knowledge.com.br>
+Copyright (c) 2026 Fernando Melo Faraco · <fernando.faraco@better-knowledge.com.br>
 Comunidade Profissionais do Futuro (CPDF) · Better Knowledge
