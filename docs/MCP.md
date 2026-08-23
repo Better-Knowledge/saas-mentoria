@@ -110,3 +110,70 @@ curl -s -X POST $B/mcp -H "Authorization: Bearer $CHAVE" \
   REST — garantindo comportamento e validação idênticos.
 - Autenticação isolada atrás de `resolverPrincipal()` em [`auth.js`](../auth.js): hoje valida chaves
   Bearer; preparada para receber o fluxo OAuth do MCP no futuro sem quebrar as chaves existentes.
+
+---
+
+## Resumo de reunião (feature 002)
+
+Cinco ferramentas espelham as rotas REST de resumo. Paridade verificada por
+`tests/parity.test.js` — não há dispensa.
+
+| Ferramenta | O que faz | Anotações |
+|---|---|---|
+| `extrair_resumo_reuniao` | Transcrição → rascunho para revisão. **Não grava nada.** | `openWorldHint: true` — única que alcança serviço externo, e cada chamada tem custo |
+| `obter_rascunho_resumo` | Lê o rascunho. Só o dono enxerga | `readOnlyHint: true` |
+| `confirmar_resumo_reuniao` | Grava o revisado no histórico | grava `revisao: sem_revisao` quando vem de chave de API |
+| `descartar_resumo_reuniao` | Descarta o rascunho | `destructiveHint: true` — irreversível |
+| `obter_transcricao` | Lê a fonte, enquanto ela existir (90 dias) | `readOnlyHint: true` |
+
+### Duas fronteiras deliberadas
+
+1. **Nenhum `inputSchema` aceita campo de autoria ou de revisão.** O agente não pode se
+   declarar humano nem marcar o próprio registro como revisado — isso vem da credencial.
+2. **`confirmar_resumo_reuniao` não aceita `promover_proxima_acao`.** Um agente que queira
+   mudar a próxima ação usa `atualizar_cliente`, numa chamada separada e explícita. Isso
+   mantém a regra "extração nunca escreve em campo de negócio" idêntica nos dois planos, e
+   deixa a alteração de campo auditável por si.
+
+### Registro confirmado por máquina aparece diferente na ficha
+
+Uma chave de API pode criar **e** confirmar o próprio rascunho — decisão registrada na spec
+desta feature. O registro entra marcado como **não revisado por humano**, com chip de atenção
+na ficha e na trilha de auditoria. Quem lê o histórico meses depois consegue distinguir o que
+uma pessoa conferiu do que nenhuma pessoa viu.
+
+### Exemplo por curl
+
+```bash
+CHAVE=crm_sua_chave_aqui
+
+# 1) descobrir as ferramentas
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer $CHAVE" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# 2) extrair (não grava nada)
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer $CHAVE" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"extrair_resumo_reuniao",
+        "arguments":{"id":29,"transcricao":"Maria: o orcamento foi aprovado..."}}}'
+
+# 3) confirmar o rascunho devolvido acima
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer $CHAVE" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+        "name":"confirmar_resumo_reuniao",
+        "arguments":{"id":3,"resumo":"Orcamento aprovado.",
+                     "decisoes":[{"texto":"Seguir com o diagnostico"}]}}}'
+```
+
+Sem o header `Authorization`, qualquer uma delas responde `401`. Um cookie de sessão **não**
+substitui a chave: os dois planos de credencial não são intercambiáveis, e
+`tests/resumo-api.test.js` fixa essa fronteira.

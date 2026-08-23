@@ -34,23 +34,39 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-      scriptSrc: ["'self'", "'unsafe-inline'"], // app usa handlers inline (onclick)
-      // helmet força script-src-attr 'none' por padrão, o que bloqueia os
-      // handlers inline (onclick/ondragstart/ondrop) — precisamos liberar:
-      scriptSrcAttr: ["'unsafe-inline'"],
+      // script-src 'self' SEM 'unsafe-inline', e sem script-src-attr: o front não tem
+      // um único handler em atributo HTML (todos os eventos são delegados, com o alvo
+      // identificado por data-*). helmet mantém script-src-attr 'none' por padrão, que
+      // é o que bloqueia onclick e afins — e é isso que faz a CSP ser uma segunda linha
+      // de defesa real contra XSS, em vez de uma promessa na documentação.
+      scriptSrc: ["'self'"],
       imgSrc: ["'self'", 'data:'],
       connectSrc: ["'self'"],
     },
   },
   hsts: process.env.NODE_ENV === 'production', // ativar atrás de HTTPS
 }));
-app.use(express.json({ limit: '64kb' }));
+// Limite de corpo por rota. A transcrição de uma reunião longa passa de 64 KB com
+// facilidade, mas baixar o limite global para acomodar um caso enfraqueceria todas as
+// outras rotas — então a folga vale só onde o dado legitimamente é grande (RNF-04).
+const jsonPadrao = express.json({ limit: '64kb' });
+const jsonTranscricao = express.json({ limit: '512kb' });
+const ROTA_TRANSCRICAO = /^\/api\/clientes\/[^/]+\/resumos\/?$/;
+app.use((req, res, next) => (
+  ROTA_TRANSCRICAO.test(req.path) ? jsonTranscricao : jsonPadrao
+)(req, res, next));
 app.use(cookieParser());
 
 // limite geral + limite específico para login (anti brute force) + limite do MCP
 app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, max: 600 }));
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { erro: 'Muitas tentativas. Tente mais tarde.' } });
 const mcpLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 600, message: { erro: 'Muitas requisições. Tente mais tarde.' } });
+// Quarto nível de limite, e o único cujo custo de abuso é financeiro: cada extração
+// aciona um serviço externo pago. Sem teto, uma chave vazada vira uma fatura.
+const extracaoLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 20,
+  message: { erro: 'Limite de extrações por hora atingido. Tente mais tarde.' },
+});
 
 // quem é o autor de uma escrita (auditoria confiável, derivada da credencial)
 const autorDe = (req) => (req.principal.tipo === 'humano' ? 'humano' : 'ia');
@@ -181,6 +197,40 @@ app.get('/api/dashboard', auth.requireAuth, (req, res) => {
   res.json(crm.dashboard());
 });
 
+// =================== RESUMO DE REUNIÃO (feature 002) ===================
+// Estas rotas só traduzem HTTP: toda a regra está em crm.resumoReuniao.
+const resumo = crm.resumoReuniao;
+
+// Cria o rascunho a partir da transcrição colada. NÃO grava nada no histórico.
+app.post('/api/clientes/:id/resumos', extracaoLimiter, auth.requireAuth, auth.csrfProtect,
+  async (req, res, next) => {
+    try {
+      const r = await resumo.criarRascunho(
+        req.params.id, (req.body || {}).transcricao, req.principal
+      );
+      res.status(201).json(r);
+    } catch (e) { next(e); }
+  });
+
+app.get('/api/resumos/:id', auth.requireAuth, (req, res) => {
+  res.json(resumo.obterRascunho(req.params.id, req.principal));
+});
+
+app.post('/api/resumos/:id/confirmar', auth.requireAuth, auth.csrfProtect, (req, res) => {
+  res.status(201).json(resumo.confirmarRascunho(req.params.id, req.body || {}, req.principal));
+});
+
+app.delete('/api/resumos/:id', auth.requireAuth, auth.csrfProtect, (req, res) => {
+  resumo.descartarRascunho(req.params.id, req.principal);
+  res.status(204).end();
+});
+
+// Fonte conferível. Transcrição expirada devolve 200 com disponivel:false — a
+// retenção cumprida não é erro, e a interface não deve mostrar falha por causa dela.
+app.get('/api/interacoes/:id/transcricao', auth.requireAuth, (req, res) => {
+  res.json(resumo.obterTranscricao(req.params.id));
+});
+
 // ---- documentação da API: Scalar em /docs (+ spec cru em /openapi.yaml) ----
 app.get('/openapi.yaml', (req, res) => {
   res.type('text/yaml').sendFile(path.join(__dirname, 'openapi.yaml'));
@@ -250,20 +300,59 @@ async function iniciar() {
 
   // ---- handler global de erros (não derruba o processo) ----
   app.use((err, req, res, next) => {
+    // corpo acima do limite da rota — resposta de negócio, não 500 genérico
+    if (err && err.type === 'entity.too.large') {
+      return res.status(413).json({ erro: 'Conteudo grande demais para esta rota' });
+    }
     // erros de domínio (crm-service) e de gestão de acesso (auth) viram
     // 400/403/404/409 de negócio, em vez de 500 genérico
     if (err instanceof crm.ErroDominio || err instanceof auth.ErroAuth) {
-      return res.status(err.status).json({ erro: err.message });
+      const corpo = { erro: err.message };
+      // 409 de próxima ação carrega o valor vigente, para a interface poder mostrar
+      // o que seria substituído antes de pedir confirmação
+      if (err.proxima_acao_vigente) corpo.proxima_acao_vigente = err.proxima_acao_vigente;
+      return res.status(err.status).json(corpo);
     }
+    // falha do serviço externo de IA: 503 (ou 400 de entrada), nunca gravação parcial
+    if (err && err.name === 'ErroIa') {
+      return res.status(err.status).json({ erro: err.message, ia_configurada: err.configurado });
+    }
+    // A mensagem real fica no log; o cliente recebe genérico. Nada de transcrição aqui.
     console.error('Erro:', err.message);
     res.status(500).json({ erro: 'Erro interno' });
   });
 
   auth.bootstrapAdmin();
-  app.listen(PORT, () => console.log(`Mini CRM rodando em http://localhost:${PORT}`));
+
+  // Retenção (FR-026a): purga no boot — cobre o container que reinicia todo dia — e a
+  // cada 24 h, para o container que fica meses de pé. unref() impede que o timer
+  // segure o processo no encerramento. O mesmo trabalho roda à mão por
+  // `npm run purgar`, que é o que torna a retenção testável sem esperar 90 dias.
+  const purgar = () => {
+    try {
+      const r = crm.resumoReuniao.purgarExpirados();
+      if (r.transcricoes || r.rascunhos) {
+        console.log(`[retencao] ${r.transcricoes} transcricao(oes) e ${r.rascunhos} rascunho(s) descartados.`);
+      }
+    } catch (e) {
+      console.error('[retencao] falha ao purgar:', e.message);
+    }
+  };
+  purgar();
+  setInterval(purgar, 24 * 60 * 60 * 1000).unref();
+
+  return app;
 }
 
-iniciar().catch((e) => {
-  console.error('Falha ao iniciar:', e);
-  process.exit(1);
-});
+// Exportado para os testes (supertest monta o app sem abrir porta).
+module.exports = { criarApp: iniciar };
+
+// Só escuta quando executado diretamente — `require('./server')` não sobe servidor.
+if (require.main === module) {
+  iniciar()
+    .then((a) => a.listen(PORT, () => console.log(`Mini CRM rodando em http://localhost:${PORT}`)))
+    .catch((e) => {
+      console.error('Falha ao iniciar:', e);
+      process.exit(1);
+    });
+}

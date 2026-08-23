@@ -75,8 +75,27 @@ const modal = document.getElementById('modal');
 const modalCorpo = document.getElementById('modal-corpo');
 document.getElementById('fecharModal').addEventListener('click', fecharModal);
 modal.addEventListener('click', e => { if (e.target === modal) fecharModal(); });
-function abrirModal(html) { modalCorpo.innerHTML = html; modal.classList.remove('escondido'); }
-function fecharModal() { modal.classList.add('escondido'); modalCorpo.innerHTML = ''; }
+// Acessibilidade do modal (RNF-10, SC-009): guarda quem tinha o foco, move o foco para
+// dentro ao abrir e devolve ao fechar. Sem isso, quem navega por teclado continua tabulando
+// atrás do modal, sem saber que ele abriu.
+let focoAnterior = null;
+
+function abrirModal(html) {
+  focoAnterior = document.activeElement;
+  modalCorpo.innerHTML = html;
+  modal.classList.remove('escondido');
+  const primeiro = modalCorpo.querySelector(
+    'textarea, input, button, [tabindex]:not([tabindex="-1"])'
+  );
+  if (primeiro) primeiro.focus({ preventScroll: true });
+}
+
+function fecharModal() {
+  modal.classList.add('escondido');
+  modalCorpo.innerHTML = '';
+  if (focoAnterior && document.contains(focoAnterior)) focoAnterior.focus({ preventScroll: true });
+  focoAnterior = null;
+}
 
 document.getElementById('btnNovo').addEventListener('click', () => abrirFormulario());
 
@@ -111,7 +130,7 @@ function renderListaHoje(elId, itens, vazioMsg) {
   const el = document.getElementById(elId);
   if (!itens.length) { el.innerHTML = `<div class="vazio">${vazioMsg}</div>`; return; }
   el.innerHTML = itens.map(c => `
-    <div class="item" onclick="abrirFicha(${c.id})">
+    <div class="item" data-acao="ficha" data-id="${c.id}" role="button" tabindex="0" aria-label="Abrir ficha de ${esc(c.nome)}">
       <div class="info">
         <b>${esc(c.nome)}</b>
         <small>${esc(c.empresa || '')} ${c.valor_estimado ? '· ' + fmtMoeda(c.valor_estimado) : ''}</small>
@@ -129,8 +148,7 @@ async function carregarFunil() {
     const doGrupo = clientes.filter(c => c.etapa === et.id);
     const cartoes = doGrupo.map(c => cartaoHTML(c)).join('') || '<div class="vazio">—</div>';
     return `
-      <div class="coluna" data-etapa="${et.id}"
-           ondragover="permitirSolta(event)" ondragleave="sairColuna(event)" ondrop="soltarCartao(event)">
+      <div class="coluna" data-etapa="${et.id}">
         <div class="coluna-titulo">${et.nome} <span class="cont">${doGrupo.length}</span></div>
         ${cartoes}
       </div>`;
@@ -141,25 +159,21 @@ function cartaoHTML(c) {
   if (c.resultado === 'ganho') tag = '<span class="tag ganho">Ganho</span>';
   if (c.resultado === 'perdido') tag = '<span class="tag perdido">Perdido</span>';
   return `
-    <div class="cartao" draggable="true" data-id="${c.id}"
-         ondragstart="iniciarArraste(event)" ondragend="fimArraste(event)"
-         onclick="abrirFicha(${c.id})">
+    <div class="cartao" draggable="true" data-id="${c.id}" data-acao="ficha" role="button" tabindex="0" aria-label="Abrir ficha de ${esc(c.nome)}">
       <b>${esc(c.nome)}</b>
       <small>${esc(c.empresa || '')}</small>
       ${c.valor_estimado ? `<div class="valor">${fmtMoeda(c.valor_estimado)}</div>` : ''}
       ${tag}
     </div>`;
 }
-// drag & drop
+// drag & drop — delegado no container do kanban. As funções recebem a coluna
+// explicitamente porque, com delegação, `currentTarget` é o container, não o alvo.
 let arrastandoId = null;
-function iniciarArraste(e) { arrastandoId = e.target.dataset.id; e.target.classList.add('arrastando'); e.stopPropagation(); }
-function fimArraste(e) { e.target.classList.remove('arrastando'); }
-function permitirSolta(e) { e.preventDefault(); e.currentTarget.classList.add('dragover'); }
-function sairColuna(e) { e.currentTarget.classList.remove('dragover'); }
-async function soltarCartao(e) {
-  e.preventDefault();
-  e.currentTarget.classList.remove('dragover');
-  const novaEtapa = e.currentTarget.dataset.etapa;
+function iniciarArraste(cartao) { arrastandoId = cartao.dataset.id; cartao.classList.add('arrastando'); }
+function fimArraste(cartao) { cartao.classList.remove('arrastando'); }
+async function soltarCartao(coluna) {
+  coluna.classList.remove('dragover');
+  const novaEtapa = coluna.dataset.etapa;
   if (!arrastandoId) return;
   try {
     await api('PUT', `/api/clientes/${arrastandoId}/etapa`, { etapa: novaEtapa });
@@ -186,7 +200,7 @@ function renderClientes(lista) {
   el.innerHTML = lista.map(c => {
     const etapa = ETAPAS.find(e => e.id === c.etapa);
     return `
-    <div class="item" onclick="abrirFicha(${c.id})">
+    <div class="item" data-acao="ficha" data-id="${c.id}" role="button" tabindex="0" aria-label="Abrir ficha de ${esc(c.nome)}">
       <div class="info">
         <b>${esc(c.nome)}</b>
         <small>${esc(c.empresa || '')} · ${etapa ? etapa.nome : c.etapa} · ${c.total_interacoes} interações</small>
@@ -203,7 +217,12 @@ async function abrirFicha(id) {
   const interacoes = (c.interacoes || []).map(i => `
     <div class="interacao">
       ${esc(i.texto)}
-      <div class="meta">${esc(i.data)}${i.gerado_por_ia ? '<span class="badge-ia">IA</span>' : ''}</div>
+      <div class="meta">
+        ${esc(i.data)}${i.gerado_por_ia ? '<span class="badge-ia">IA</span>' : ''}${selosRevisao(i)}
+        ${i.origem_registro === 'resumo_reuniao'
+          ? `<button type="button" class="btn pequeno" data-acao="ver-transcricao" data-interacao="${i.id}" aria-label="Ver a transcrição de origem deste registro">ver transcrição</button>`
+          : ''}
+      </div>
     </div>`).join('') || '<div class="vazio">Sem interações ainda.</div>';
 
   abrirModal(`
@@ -237,14 +256,15 @@ async function abrirFicha(id) {
       <div class="campo">
         <textarea id="novaInteracao" placeholder="Anote uma conversa, reunião ou observação..."></textarea>
       </div>
-      <button class="btn primario" onclick="salvarInteracao(${c.id})">+ Adicionar anotação</button>
+      <button type="button" class="btn primario" data-acao="salvar-interacao" data-id="${c.id}">+ Adicionar anotação</button>
+      <button type="button" class="btn" data-acao="abrir-resumo" data-cliente="${c.id}">Resumir reunião</button>
       <div style="margin-top:14px">${interacoes}</div>
     </div>
 
     <div class="acoes-modal">
-      <button class="btn primario" onclick="abrirFormulario(${c.id})">Editar</button>
-      <button class="btn" onclick="exportarCliente(${c.id})">Exportar dados (LGPD)</button>
-      <button class="btn perigo" onclick="excluirCliente(${c.id})">Excluir (LGPD)</button>
+      <button type="button" class="btn primario" data-acao="editar-cliente" data-id="${c.id}">Editar</button>
+      <button type="button" class="btn" data-acao="exportar-cliente" data-id="${c.id}">Exportar dados (LGPD)</button>
+      <button type="button" class="btn perigo" data-acao="excluir-cliente" data-id="${c.id}">Excluir (LGPD)</button>
     </div>
   `);
 }
@@ -318,8 +338,8 @@ async function abrirFormulario(id) {
       <div class="campo"><label>Data da próxima ação</label><input id="f_acao_data" type="date" value="${c.proxima_acao_data || ''}" /></div>
     </div>
     <div class="acoes-modal">
-      <button class="btn primario" onclick="salvarCliente(${id || 'null'})">Salvar</button>
-      <button class="btn" onclick="${id ? `abrirFicha(${id})` : 'fecharModal()'}">Cancelar</button>
+      <button type="button" class="btn primario" data-acao="salvar-cliente" data-id="${id || ''}">Salvar</button>
+      <button type="button" class="btn" data-acao="${id ? 'ficha' : 'fechar-modal'}" data-id="${id || ''}">Cancelar</button>
     </div>
   `);
 }
@@ -456,7 +476,7 @@ function caixaGrafico(titulo, nota, conteudo, legenda) {
 
 function listaAtencao(titulo, nota, itens, vazio) {
   const linhas = itens.length ? itens.map(c => `
-    <div class="item" onclick="abrirFicha(${c.id})">
+    <div class="item" data-acao="ficha" data-id="${c.id}" role="button" tabindex="0" aria-label="Abrir ficha de ${esc(c.nome)}">
       <div class="info">
         <b>${esc(c.nome)}</b>
         <small>${esc(c.empresa || '—')}${c.dias != null ? ` · parado há ${c.dias} dias` : ''}</small>
@@ -566,7 +586,283 @@ async function carregarDashboard() {
 }
 
 // =================== LOGIN / SESSÃO ===================
+// ===================== RESUMO DE REUNIÃO (feature 002) =====================
+// Eventos por DELEGAÇÃO: um listener na raiz do modal, alvo identificado por data-*.
+// Nenhum onclick em atributo — é o que permite à CSP dispensar 'unsafe-inline'
+// (RNF-16). O código anterior desta tela usa onclick; a remoção daqueles é RNF-16 da
+// fundação v2, não desta feature.
+
+let RASCUNHO = null;              // rascunho em revisão, só na memória desta aba
+let clienteDoResumo = null;
+let extracaoEmCurso = null;       // AbortController da chamada em andamento
+
+const RETENCAO_DIAS = 90;
+
+// Selos exibidos no histórico. Distinguir "revisado por gente" de "nenhuma pessoa
+// olhou isto" é o ponto inteiro do FR-028a — sem o selo, os dois somem no mesmo badge.
+function selosRevisao(i) {
+  if (i.revisao === 'humana') {
+    const quem = i.revisado_em ? ` em ${esc(fmtData(String(i.revisado_em).slice(0, 10)))}` : '';
+    return `<span class="chip-revisao">revisado${quem}</span>`;
+  }
+  if (i.revisao === 'sem_revisao') {
+    return '<span class="chip-atencao" title="Confirmado por automação, sem conferência humana">não revisado</span>';
+  }
+  return '';
+}
+
+function abrirColarTranscricao(clienteId) {
+  clienteDoResumo = clienteId;
+  RASCUNHO = null;
+  abrirModal(`
+    <h1>Resumir reunião</h1>
+    <p class="subtitulo">Cole a transcrição. Nada é salvo antes de você revisar e confirmar.</p>
+    <div class="campo">
+      <label for="transcricao">Transcrição da reunião</label>
+      <textarea id="transcricao" rows="12" placeholder="Cole aqui o texto da reunião..."></textarea>
+    </div>
+    <p class="aviso-retencao">
+      A transcrição fica guardada por ${RETENCAO_DIAS} dias para você poder conferir a fonte,
+      e depois é descartada automaticamente. Telefones, e-mails e documentos são mascarados
+      antes do envio ao serviço de IA.
+    </p>
+    <div class="acoes-modal">
+      <button type="button" class="btn primario" data-acao="extrair">Extrair</button>
+      <button type="button" class="btn" data-acao="fechar-resumo">Cancelar</button>
+    </div>
+  `);
+}
+
+async function extrairResumo() {
+  const campo = document.getElementById('transcricao');
+  const texto = (campo ? campo.value : '').trim();
+  if (!texto) return toast('Cole a transcrição antes de extrair.', true);
+
+  const botao = document.querySelector('[data-acao="extrair"]');
+  if (botao) { botao.disabled = true; botao.textContent = 'Extraindo…'; }
+
+  // Teto de 60 s no cliente também: a espera tem que terminar de algum jeito, com
+  // mensagem, em vez de deixar a pessoa olhando um botão travado (FR-031).
+  extracaoEmCurso = new AbortController();
+  const prazo = setTimeout(() => extracaoEmCurso.abort(), 60000);
+  try {
+    const r = await fetch(`/api/clientes/${clienteDoResumo}/resumos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
+      body: JSON.stringify({ transcricao: texto }),
+      signal: extracaoEmCurso.signal,
+    });
+    const dados = await r.json().catch(() => ({}));
+    // Este caminho usa fetch cru por causa do AbortController, então precisa repetir o
+    // tratamento de 401 que o helper api() já faz. Sem ele, uma sessão que expira aqui
+    // devolveria um toast genérico e deixaria a transcrição na tela (FR-094, FR-025).
+    if (r.status === 401) { mostrarLogin(); throw new Error('Sessão expirada. Faça login novamente.'); }
+    if (!r.ok) throw new Error(dados.erro || 'Não foi possível extrair.');
+    RASCUNHO = dados;
+    renderRevisao();
+  } catch (err) {
+    // A transcrição NÃO se perde: a tela de colar continua com o texto (FR-006).
+    if (err.name === 'AbortError') {
+      toast('A extração passou de 60 segundos e foi cancelada. Nada foi gravado.', true);
+    } else {
+      toast(err.message, true);
+    }
+    if (botao) { botao.disabled = false; botao.textContent = 'Extrair'; }
+  } finally {
+    clearTimeout(prazo);
+    extracaoEmCurso = null;
+  }
+}
+
+function listaEditavel(tipo, itens, vazio, comDetalhes = false) {
+  if (!itens.length) return `<div class="vazio">${esc(vazio)}</div>`;
+  return itens.map((item, i) => `
+    <div class="item item-revisao">
+      <div class="campo">
+        <textarea data-campo="texto" data-tipo="${tipo}" data-i="${i}" rows="2" aria-label="Texto do item">${esc(item.texto)}</textarea>
+      </div>
+      ${comDetalhes ? `
+        <div class="linha-detalhes">
+          <input type="text" data-campo="responsavel" data-tipo="${tipo}" data-i="${i}"
+                 placeholder="Responsável (não declarado)" aria-label="Responsável pelo passo" value="${esc(item.responsavel || '')}" />
+          <input type="date" data-campo="prazo" data-tipo="${tipo}" data-i="${i}"
+                 aria-label="Prazo do passo" value="${esc(item.prazo || '')}" />
+          <button type="button" class="btn pequeno" data-acao="promover" data-i="${i}" aria-label="Transformar este passo na próxima ação do cliente">Virar próxima ação</button>
+        </div>` : ''}
+      <button type="button" class="btn pequeno perigo" data-acao="remover" data-tipo="${tipo}" data-i="${i}" aria-label="Remover este item">Remover</button>
+    </div>`).join('');
+}
+
+function renderRevisao() {
+  const r = RASCUNHO;
+  const promovido = r.promover_proxima_acao;
+  abrirModal(`
+    <h1>Revisar antes de salvar</h1>
+    <p class="subtitulo aviso-ia">
+      Gerado por IA a partir da transcrição — <strong>ainda não foi salvo</strong>.
+      Corrija o que estiver errado antes de confirmar.
+    </p>
+
+    <div class="ficha-secao">
+      <h3>Resumo</h3>
+      <div class="campo">
+        <textarea id="resumo-texto" rows="4" aria-label="Resumo da reunião">${esc(r.resumo || '')}</textarea>
+      </div>
+    </div>
+
+    <div class="ficha-secao">
+      <h3>Decisões <button type="button" class="btn pequeno" data-acao="add" data-tipo="decisoes" aria-label="Acrescentar decisão">+ item</button></h3>
+      ${listaEditavel('decisoes', r.decisoes || [], 'Nenhuma decisão identificada nesta reunião.')}
+    </div>
+
+    <div class="ficha-secao">
+      <h3>Próximos passos <button type="button" class="btn pequeno" data-acao="add" data-tipo="proximos_passos" aria-label="Acrescentar próximo passo">+ item</button></h3>
+      ${listaEditavel('proximos_passos', r.proximos_passos || [], 'Nenhum próximo passo identificado.', true)}
+    </div>
+
+    <div class="ficha-secao">
+      <h3>Objeções <button type="button" class="btn pequeno" data-acao="add" data-tipo="objecoes" aria-label="Acrescentar objeção">+ item</button></h3>
+      ${listaEditavel('objecoes', r.objecoes || [], 'Nenhuma objeção identificada.')}
+    </div>
+
+    ${promovido ? `
+      <div class="ficha-secao destaque-promocao">
+        <h3>Próxima ação a aplicar</h3>
+        <div class="dado"><span>${esc(promovido.texto)}</span> — ${esc(promovido.data || 'sem data')}</div>
+        <button type="button" class="btn pequeno" data-acao="cancelar-promocao" aria-label="Não aplicar a próxima ação sugerida">Não aplicar</button>
+      </div>` : ''}
+
+    <div class="acoes-modal">
+      <button type="button" class="btn primario" data-acao="confirmar">Confirmar e salvar</button>
+      <button type="button" class="btn perigo" data-acao="descartar">Descartar</button>
+    </div>
+  `);
+}
+
+// Lê de volta o que foi editado na tela para dentro do rascunho em memória.
+function coletarEdicoes() {
+  const resumoTexto = document.getElementById('resumo-texto');
+  if (resumoTexto) RASCUNHO.resumo = resumoTexto.value;
+  document.querySelectorAll('[data-campo][data-tipo][data-i]').forEach((el) => {
+    const lista = RASCUNHO[el.dataset.tipo];
+    if (!lista || !lista[el.dataset.i]) return;
+    const valor = el.value.trim();
+    lista[el.dataset.i][el.dataset.campo] = valor === '' ? (el.dataset.campo === 'texto' ? '' : null) : valor;
+  });
+}
+
+async function confirmarResumo({ substituir = false } = {}) {
+  coletarEdicoes();
+  const corpo = {
+    resumo: RASCUNHO.resumo || '',
+    decisoes: (RASCUNHO.decisoes || []).filter((i) => i.texto.trim()),
+    proximos_passos: (RASCUNHO.proximos_passos || []).filter((i) => i.texto.trim()),
+    objecoes: (RASCUNHO.objecoes || []).filter((i) => i.texto.trim()),
+  };
+  if (RASCUNHO.promover_proxima_acao) {
+    corpo.promover_proxima_acao = { ...RASCUNHO.promover_proxima_acao, substituir };
+  }
+  try {
+    const r = await fetch(`/api/resumos/${RASCUNHO.id}/confirmar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
+      body: JSON.stringify(corpo),
+    });
+    const dados = await r.json().catch(() => ({}));
+    // Mesma razão: fetch cru aqui por causa do 409, logo o 401 precisa ser tratado à mão.
+    if (r.status === 401) { mostrarLogin(); throw new Error('Sessão expirada. Faça login novamente.'); }
+    if (r.status === 409 && dados.proxima_acao_vigente) {
+      const v = dados.proxima_acao_vigente;
+      const ok = confirm(
+        `Este cliente já tem uma próxima ação:\n\n"${v.proxima_acao}"`
+        + `${v.proxima_acao_data ? ` — ${v.proxima_acao_data}` : ''}\n\nSubstituir pela nova?`
+      );
+      if (!ok) return;
+      return confirmarResumo({ substituir: true });
+    }
+    if (!r.ok) throw new Error(dados.erro || 'Não foi possível salvar.');
+    const cliente = clienteDoResumo;
+    RASCUNHO = null;
+    toast('Resumo salvo no histórico.');
+    abrirFicha(cliente);
+    recarregarTelaAtiva();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function descartarResumo() {
+  if (!confirm('Descartar este resumo? A transcrição vai junto e a extração precisaria ser refeita.')) return;
+  try {
+    await api('DELETE', `/api/resumos/${RASCUNHO.id}`);
+    const cliente = clienteDoResumo;
+    RASCUNHO = null;
+    toast('Rascunho descartado. Nada foi salvo.');
+    abrirFicha(cliente);
+  } catch (err) { toast(err.message, true); }
+}
+
+async function verTranscricao(interacaoId) {
+  try {
+    const t = await api('GET', `/api/interacoes/${interacaoId}/transcricao`);
+    if (!t.disponivel) {
+      return toast(`A transcrição de origem já foi descartada (retenção de ${RETENCAO_DIAS} dias).`);
+    }
+    abrirModal(`
+      <h1>Transcrição de origem</h1>
+      <p class="subtitulo">Guardada até ${esc(fmtData(t.expira_em))}. Depois disso é descartada.</p>
+      <pre class="transcricao-fonte">${esc(t.texto)}</pre>
+      <div class="acoes-modal"><button type="button" class="btn" data-acao="fechar-resumo">Fechar</button></div>
+    `);
+  } catch (err) { toast(err.message, true); }
+}
+
+// Um listener por região, alvo por data-* (RNF-16).
+modal.addEventListener('click', (e) => {
+  const alvo = e.target.closest('[data-acao]');
+  if (!alvo) return;
+  const { acao, tipo, i, cliente, interacao } = alvo.dataset;
+
+  if (acao === 'abrir-resumo') return abrirColarTranscricao(cliente);
+  if (acao === 'ver-transcricao') return verTranscricao(interacao);
+  if (acao === 'fechar-resumo') return fecharModal();
+  if (acao === 'extrair') return extrairResumo();
+  if (!RASCUNHO) return;
+
+  if (acao === 'confirmar') return confirmarResumo();
+  if (acao === 'descartar') return descartarResumo();
+  if (acao === 'add') {
+    coletarEdicoes();
+    const vazio = tipo === 'proximos_passos'
+      ? { texto: '', responsavel: null, prazo: null } : { texto: '' };
+    RASCUNHO[tipo] = [...(RASCUNHO[tipo] || []), vazio];
+    return renderRevisao();
+  }
+  if (acao === 'remover') {
+    coletarEdicoes();
+    RASCUNHO[tipo] = RASCUNHO[tipo].filter((_, idx) => String(idx) !== i);
+    return renderRevisao();
+  }
+  if (acao === 'promover') {
+    coletarEdicoes();
+    const passo = RASCUNHO.proximos_passos[i];
+    if (!passo || !passo.texto.trim()) return toast('Escreva o passo antes de promovê-lo.', true);
+    if (!passo.prazo) return toast('Defina a data do passo para virar próxima ação.', true);
+    RASCUNHO.promover_proxima_acao = { texto: passo.texto.trim(), data: passo.prazo };
+    return renderRevisao();
+  }
+  if (acao === 'cancelar-promocao') {
+    coletarEdicoes();
+    delete RASCUNHO.promover_proxima_acao;
+    return renderRevisao();
+  }
+});
+
 function mostrarLogin() {
+  // Higiene de sessão: o rascunho não pode ficar na tela para quem sentar depois (FR-025),
+  // e a chave de API revelada não pode sobreviver ao fim da sessão.
+  RASCUNHO = null;
+  clienteDoResumo = null;
+  chaveRevelada = null;
+  fecharModal();
   // Fecha o modal e limpa a sessão em memória: sem isso, sair (ou a sessão
   // expirar) deixaria a última tela aberta — lista de usuários, chaves de API —
   // visível por cima do login para quem sentar no navegador em seguida.
@@ -638,8 +934,8 @@ async function abrirUsuarios() {
         <small>${esc(u.email)} · desde ${esc(u.created_at)}</small>
       </div>
       <div style="display:flex; gap:8px">
-        <button class="btn" onclick="abrirEditarUsuario(${u.id})">Editar</button>
-        ${u.id === USUARIO.id ? '' : `<button class="btn perigo" onclick="excluirUsuario(${u.id})">Excluir</button>`}
+        <button type="button" class="btn" data-acao="editar-usuario" data-id="${u.id}">Editar</button>
+        ${u.id === USUARIO.id ? '' : `<button type="button" class="btn perigo" data-acao="excluir-usuario" data-id="${u.id}">Excluir</button>`}
       </div>
     </div>`).join('');
 
@@ -663,7 +959,7 @@ async function abrirUsuarios() {
           <option value="admin">Administrador</option>
         </select></div>
       </div>
-      <button class="btn primario" onclick="criarUsuario()">Cadastrar usuário</button>
+      <button type="button" class="btn primario" data-acao="criar-usuario">Cadastrar usuário</button>
       <p class="sub" style="margin-top:10px">Combine a senha inicial com a pessoa — ela pode trocá-la
         depois em <b>Trocar minha senha</b>.</p>
     </div>
@@ -702,8 +998,8 @@ async function abrirEditarUsuario(id) {
       </select></div>
     </div>
     <div class="acoes-modal">
-      <button class="btn primario" onclick="salvarUsuario(${u.id})">Salvar</button>
-      <button class="btn" onclick="abrirUsuarios()">Cancelar</button>
+      <button type="button" class="btn primario" data-acao="salvar-usuario" data-id="${u.id}">Salvar</button>
+      <button type="button" class="btn" data-acao="abrir-usuarios">Cancelar</button>
     </div>
 
     <div class="ficha-secao">
@@ -714,7 +1010,7 @@ async function abrirEditarUsuario(id) {
         <label>Nova senha</label>
         <div style="display:flex; gap:10px">
           <input id="e_senha" type="password" placeholder="mínimo 8 caracteres" />
-          <button class="btn" onclick="redefinirSenhaUsuario(${u.id})">Redefinir</button>
+          <button type="button" class="btn" data-acao="redefinir-senha" data-id="${u.id}">Redefinir</button>
         </div>
       </div>
     </div>
@@ -762,8 +1058,8 @@ function abrirTrocarSenha() {
     <div class="campo"><label>Nova senha</label><input id="s_nova" type="password" placeholder="mínimo 8 caracteres" /></div>
     <div class="campo"><label>Repita a nova senha</label><input id="s_conf" type="password" /></div>
     <div class="acoes-modal">
-      <button class="btn primario" onclick="salvarPropriaSenha()">Salvar</button>
-      <button class="btn" onclick="fecharModal()">Cancelar</button>
+      <button type="button" class="btn primario" data-acao="salvar-propria-senha">Salvar</button>
+      <button type="button" class="btn" data-acao="fechar-modal">Cancelar</button>
     </div>
   `);
 }
@@ -790,7 +1086,7 @@ async function abrirIntegracoes() {
         <b>${esc(k.nome)} ${k.ativa ? '' : '<span class="tag perdido">revogada</span>'}</b>
         <small><code>${esc(k.prefixo)}…</code> · criada em ${esc(k.created_at)} ${k.ultimo_uso ? '· último uso ' + esc(k.ultimo_uso) : '· nunca usada'}</small>
       </div>
-      ${k.ativa ? `<button class="btn perigo" onclick="revogarKey(${k.id})">Revogar</button>` : ''}
+      ${k.ativa ? `<button type="button" class="btn perigo" data-acao="revogar-key" data-id="${k.id}">Revogar</button>` : ''}
     </div>`).join('') : '<div class="vazio">Nenhuma chave criada ainda.</div>';
 
   abrirModal(`
@@ -803,7 +1099,7 @@ async function abrirIntegracoes() {
       <label>Nova integração</label>
       <div style="display:flex; gap:10px">
         <input id="nova-key-nome" placeholder="Ex.: Agente do WhatsApp" />
-        <button class="btn primario" onclick="criarKey()">Gerar chave</button>
+        <button type="button" class="btn primario" data-acao="criar-key">Gerar chave</button>
       </div>
     </div>
     <div id="key-nova"></div>
@@ -813,16 +1109,22 @@ async function abrirIntegracoes() {
     </div>
   `);
 }
+// A chave em texto vive só nesta variável enquanto o modal está aberto. Guardá-la num
+// atributo do DOM (era o que o onclick de copiar fazia) deixaria o segredo legível por
+// qualquer extensão ou script que leia o documento.
+let chaveRevelada = null;
+
 async function criarKey() {
   const nome = document.getElementById('nova-key-nome').value.trim();
   if (!nome) return toast('Dê um nome para a integração.', true);
   try {
     const k = await api('POST', '/api/keys', { nome });
+    chaveRevelada = k.chave;   // em memória, para o botão Copiar; nunca num atributo
     document.getElementById('key-nova').innerHTML = `
       <div class="key-revelada">
         <b>Chave criada — copie agora, ela não será mostrada de novo:</b>
         <code class="key-valor">${esc(k.chave)}</code>
-        <button class="btn" onclick="navigator.clipboard.writeText('${k.chave}').then(()=>toast('Chave copiada!'))">Copiar</button>
+        <button type="button" class="btn" data-acao="copiar-chave">Copiar</button>
       </div>`;
     toast('Chave gerada!');
     // atualiza a lista mantendo o bloco da chave revelada
@@ -838,15 +1140,14 @@ async function revogarKey(id) {
   catch (err) { toast(err.message, true); }
 }
 
-// expor funcoes usadas no HTML inline
-Object.assign(window, {
-  abrirFicha, abrirFormulario, salvarCliente, salvarInteracao, exportarCliente, excluirCliente,
-  iniciarArraste, fimArraste, permitirSolta, sairColuna, soltarCartao,
-  criarKey, revogarKey,
-  abrirUsuarios, criarUsuario, abrirEditarUsuario, salvarUsuario,
-  redefinirSenhaUsuario, excluirUsuario, salvarPropriaSenha, fecharModal,
-  carregarDashboard,
-});
+// O bloco `Object.assign(window, {...})` que existia aqui foi removido: ele servia apenas
+// para os handlers inline (`onclick="abrirFicha(1)"`) enxergarem as funções, e não há mais
+// handler inline algum.
+//
+// Ressalva honesta: isto NÃO tira as funções do objeto global. Em script clássico, toda
+// `function` de topo já é propriedade de `window` por definição da linguagem — o que sumiu
+// foi a re-exportação explícita, não o alcance. Tirar de fato exigiria envolver o arquivo
+// num módulo ou IIFE, o que é refatoração de fundação e não desta feature.
 
 // =================== INICIALIZAÇÃO ===================
 (async function init() {
@@ -864,3 +1165,92 @@ Object.assign(window, {
     mostrarLogin();
   }
 })();
+
+// =================== DELEGAÇÃO GLOBAL DE EVENTOS ===================
+// Um dispatcher para todo o app, alvo identificado por data-*. Nenhum handler em
+// atributo HTML — é o que permite à CSP declarar `script-src 'self'` sem
+// 'unsafe-inline' e sem script-src-attr, fechando o RNF-16.
+//
+// Antes disto, a CSP do produto declarava uma proteção contra XSS que não tinha: com
+// 'unsafe-inline' ligado, o escape de saída era a única linha de defesa real.
+
+const ACOES = {
+  'ficha':                (id) => abrirFicha(id),
+  'fechar-modal':         () => fecharModal(),
+  'salvar-interacao':     (id) => salvarInteracao(id),
+  'editar-cliente':       (id) => abrirFormulario(id),
+  'exportar-cliente':     (id) => exportarCliente(id),
+  'excluir-cliente':      (id) => excluirCliente(id),
+  'salvar-cliente':       (id) => salvarCliente(id || null),
+  'abrir-usuarios':       () => abrirUsuarios(),
+  'criar-usuario':        () => criarUsuario(),
+  'editar-usuario':       (id) => abrirEditarUsuario(id),
+  'salvar-usuario':       (id) => salvarUsuario(id),
+  'excluir-usuario':      (id) => excluirUsuario(id),
+  'redefinir-senha':      (id) => redefinirSenhaUsuario(id),
+  'salvar-propria-senha': () => salvarPropriaSenha(),
+  'criar-key':            () => criarKey(),
+  'revogar-key':          (id) => revogarKey(id),
+  'copiar-chave':         () => {
+    if (!chaveRevelada) return toast('A chave não está mais disponível.', true);
+    navigator.clipboard.writeText(chaveRevelada).then(() => toast('Chave copiada!'));
+  },
+};
+
+document.addEventListener('click', (e) => {
+  const alvo = e.target.closest('[data-acao]');
+  if (!alvo) return;
+  const acao = ACOES[alvo.dataset.acao];
+  if (!acao) return;              // ações do modal de resumo têm dispatcher próprio
+  e.preventDefault();
+  acao(alvo.dataset.id);
+});
+
+// Itens de lista e cartões do funil viram alvos de teclado: são `role="button"` com
+// tabindex, então Enter e Espaço precisam funcionar como o clique (RNF-10).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const alvo = e.target.closest('[data-acao][role="button"]');
+  if (!alvo) return;
+  e.preventDefault();
+  alvo.click();
+});
+
+// Esc fecha o modal. Na tela de revisão passa pela mesma confirmação do botão Descartar:
+// fechar sem querer jogaria fora uma extração que custou dinheiro.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (modal.classList.contains('escondido')) return;
+  if (RASCUNHO) { descartarResumo(); return; }
+  fecharModal();
+});
+
+// Arraste do funil, delegado no container.
+const kanbanEl = document.getElementById('kanban');
+if (kanbanEl) {
+  kanbanEl.addEventListener('dragstart', (e) => {
+    const cartao = e.target.closest('.cartao');
+    if (cartao) iniciarArraste(cartao);
+  });
+  kanbanEl.addEventListener('dragend', (e) => {
+    const cartao = e.target.closest('.cartao');
+    if (cartao) fimArraste(cartao);
+  });
+  kanbanEl.addEventListener('dragover', (e) => {
+    const coluna = e.target.closest('.coluna');
+    if (!coluna) return;
+    e.preventDefault();
+    coluna.classList.add('dragover');
+  });
+  kanbanEl.addEventListener('dragleave', (e) => {
+    const coluna = e.target.closest('.coluna');
+    // relatedTarget fora da coluna evita o piscar ao passar sobre os filhos
+    if (coluna && !coluna.contains(e.relatedTarget)) coluna.classList.remove('dragover');
+  });
+  kanbanEl.addEventListener('drop', (e) => {
+    const coluna = e.target.closest('.coluna');
+    if (!coluna) return;
+    e.preventDefault();
+    soltarCartao(coluna);
+  });
+}

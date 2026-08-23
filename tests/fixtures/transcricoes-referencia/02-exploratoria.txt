@@ -1,0 +1,7 @@
+Farley: Bom te conhecer, Roberto. Me conta um pouco da operação de vocês.
+Roberto: Somos uma distribuidora, uns quarenta funcionários. Ouvi falar de automação com IA mas confesso que não sei nem por onde começar.
+Farley: Entendo. Vocês já usam algum sistema hoje?
+Roberto: Planilha, muita planilha. E WhatsApp.
+Farley: É o cenário mais comum. Posso te mandar um material explicando os caminhos possíveis.
+Roberto: Pode sim, sem compromisso. Vou dar uma olhada com calma e depois a gente se fala.
+Farley: Perfeito. Qualquer coisa estou à disposição.

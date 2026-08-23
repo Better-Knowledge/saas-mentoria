@@ -9,7 +9,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { TOOLS } from './tools.mjs';
 
 // Registra as ferramentas em um McpServer, ligando cada uma ao crm-service e ao `autor` da requisição.
-function registrarFerramentas(server, crmService, autor) {
+function registrarFerramentas(server, crmService, autor, principal) {
   for (const t of TOOLS) {
     const config = { description: t.description, annotations: t.annotations };
     // SDK aceita inputSchema como forma zod; omitimos quando a ferramenta não tem parâmetros.
@@ -18,7 +18,7 @@ function registrarFerramentas(server, crmService, autor) {
     }
     server.registerTool(t.name, config, async (args) => {
       try {
-        const resultado = await t.run(crmService, autor, args || {});
+        const resultado = await t.run(crmService, autor, args || {}, principal);
         return { content: [{ type: 'text', text: JSON.stringify(resultado, null, 2) }] };
       } catch (e) {
         // Erros de domínio (400/404) e quaisquer outros viram erro de ferramenta — sem 500 e sem
@@ -35,7 +35,9 @@ export function criarHandlerMcp({ crmService }) {
   return async function handlerMcp(req, res) {
     const autor = req.principal && req.principal.tipo === 'ia' ? 'ia' : 'humano';
     const server = new McpServer({ name: 'mini-crm', version: '1.0.0' });
-    registrarFerramentas(server, crmService, autor);
+    // O principal inteiro é repassado às ferramentas: a posse do rascunho e a marca de
+    // revisão saem da credencial verificada, nunca da entrada do agente.
+    registrarFerramentas(server, crmService, autor, req.principal);
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,   // stateless

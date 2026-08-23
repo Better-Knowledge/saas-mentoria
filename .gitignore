@@ -8,3 +8,6 @@ node_modules/
 # Ferramentas/locais (não versionar)
 .claude/
 .playwright-mcp/
+
+# Banco temporário das suítes de teste
+tests/tmp/

@@ -440,3 +440,52 @@ main { padding: 48px 40px 80px; max-width: 1320px; margin: 0 auto; }
 @media (max-width: 560px) {
   .kanban, .resumo { grid-template-columns: 1fr; }
 }
+
+/* =================== RESUMO DE REUNIÃO (feature 002) =================== */
+/* Sem token novo: tudo abaixo usa as custom properties já definidas em :root. */
+
+/* Botão de ação secundária dentro de listas e cabeçalhos de seção. */
+.btn.pequeno {
+  padding: 4px 10px; font-size: 12px; letter-spacing: 0.02em; margin-left: 8px;
+}
+
+/* "Revisado por gente" x "nenhuma pessoa olhou isto" — a distinção que o registro
+   precisa carregar meses depois. O chip de atenção usa a cor de aviso, não a de
+   perigo: não é erro, é informação que muda como se lê o conteúdo. */
+.chip-revisao, .chip-atencao {
+  display: inline-block; font-family: var(--font-sans); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.08em; padding: 2px 8px; border-radius: var(--r-pill); margin-left: 8px;
+}
+.chip-revisao { background: rgba(79,122,90,0.14); color: var(--success); }
+.chip-atencao { background: rgba(214,162,78,0.18); color: var(--warning); }
+
+/* Avisos da tela de revisão. */
+.aviso-ia { color: var(--ac-orange); }
+.aviso-retencao {
+  font-family: var(--font-body); font-size: 13px; color: var(--fg-muted);
+  background: var(--bg-elev); border: 1px solid var(--border-2);
+  border-radius: var(--r-3); padding: 12px 14px; margin: 14px 0;
+}
+
+/* Item editável da revisão. */
+.item-revisao { display: block; cursor: default; }
+.item-revisao:hover { transform: none; }
+.item-revisao .campo { margin-bottom: 6px; }
+.linha-detalhes { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+.linha-detalhes input {
+  flex: 1 1 160px; min-width: 0; padding: 8px 10px;
+  background: var(--bg-elev); border: 1px solid var(--border-2);
+  border-radius: var(--r-3); color: var(--fg); font-family: var(--font-body); font-size: 14px;
+}
+.linha-detalhes input:focus { outline: none; border-color: var(--ac-orange); }
+
+.destaque-promocao { border-left: 3px solid var(--ac-orange); padding-left: 14px; }
+
+/* A fonte conferível. Rola dentro da própria caixa: transcrição longa não pode
+   empurrar o corpo da página para o lado (RNF-11). */
+.transcricao-fonte {
+  white-space: pre-wrap; word-break: break-word; overflow-x: auto; max-height: 50vh;
+  overflow-y: auto; background: var(--bg-elev); border: 1px solid var(--border-2);
+  border-radius: var(--r-3); padding: 14px; font-family: var(--font-mono); font-size: 13px;
+  line-height: 1.6; color: var(--fg-muted);
+}

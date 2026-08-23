@@ -105,4 +105,83 @@ if (!temColuna('clientes', 'fechado_em')) {
   console.log(`[migracao] coluna clientes.fechado_em criada; ${info.changes} registro(s) ja fechados receberam date(updated_at) como estimativa.`);
 }
 
+// ===== FEATURE 002 — RESUMO AUTOMÁTICO DE REUNIÃO =====
+// Todas aditivas e idempotentes: criar tabela nova nunca toca em dado existente.
+
+db.exec(`
+-- Rascunho da extração, entre a chamada ao modelo e a decisão humana.
+-- NÃO é conteúdo do cliente: some ao ser confirmado ou descartado.
+CREATE TABLE IF NOT EXISTS resumo_rascunhos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cliente_id INTEGER NOT NULL,
+  payload TEXT NOT NULL,                  -- JSON: resumo, decisoes, proximos_passos, objecoes
+  transcricao_texto TEXT NOT NULL,        -- ainda nao promovida a tabela transcricoes
+  dono_tipo TEXT NOT NULL,                -- humano | ia (de qual plano de credencial nasceu)
+  dono_id INTEGER NOT NULL,               -- usuarios.id ou api_keys.id, conforme dono_tipo
+  modelo TEXT,                            -- rastreabilidade: quem produziu
+  tokens_entrada INTEGER,
+  tokens_saida INTEGER,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_rascunho_dono ON resumo_rascunhos(dono_tipo, dono_id, created_at);
+
+-- Transcrição de origem, retida por 90 dias. cliente_id é redundante de propósito:
+-- a rotina de purga varre por data sem precisar de join.
+CREATE TABLE IF NOT EXISTS transcricoes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  interacao_id INTEGER NOT NULL UNIQUE,
+  cliente_id INTEGER NOT NULL,
+  texto TEXT NOT NULL,
+  expira_em TEXT NOT NULL,                -- data da gravação + 90 dias, calculada aqui
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY (interacao_id) REFERENCES interacoes(id) ON DELETE CASCADE,
+  FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_transcricao_expira ON transcricoes(expira_em);
+
+-- Trilha de auditoria (PRD RF-84, schema do PRD 8.2 — não é desenho novo).
+-- SEM FK para clientes de propósito: o registro precisa sobreviver à exclusão do
+-- cliente. Apagar o dado pessoal é direito do titular; apagar a prova de que ele
+-- foi apagado, não. Por isso valor_anterior/valor_novo nunca guardam dado pessoal.
+CREATE TABLE IF NOT EXISTS auditoria (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entidade TEXT NOT NULL,                 -- cliente | interacao | usuario | api_key
+  entidade_id INTEGER NOT NULL,
+  acao TEXT NOT NULL,                     -- criar | atualizar | excluir
+  campo TEXT,                             -- NULL em criar/excluir
+  valor_anterior TEXT,
+  valor_novo TEXT,
+  autor TEXT NOT NULL,                    -- humano | ia
+  credencial TEXT NOT NULL,               -- sessao | apikey
+  credencial_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_entidade ON auditoria(entidade, entidade_id, created_at);
+`);
+
+// Colunas aditivas em interacoes.
+// gerado_por_ia responde "quem escreveu"; revisao responde uma pergunta
+// diferente — "alguém conferiu antes de salvar". As duas juntas produzem os três
+// estados que a ficha exibe (humano / IA revisada / IA sem revisão).
+// duracao_ms no rascunho: SC-002 exige 95% das extrações em ate 30 s, e sem o tempo
+// medido esse criterio nao tem como ser verificado.
+if (!temColuna('resumo_rascunhos', 'duracao_ms')) {
+  db.exec('ALTER TABLE resumo_rascunhos ADD COLUMN duracao_ms INTEGER');
+  console.log('[migracao] coluna resumo_rascunhos.duracao_ms criada.');
+}
+
+const COLUNAS_INTERACOES = {
+  revisao: 'TEXT',            // humana | sem_revisao | NULL (interação comum)
+  revisado_por: 'INTEGER',    // usuarios.id de quem confirmou
+  revisado_em: 'TEXT',
+  origem_registro: 'TEXT',    // 'resumo_reuniao' nas criadas pela feature 002
+};
+for (const [coluna, tipo] of Object.entries(COLUNAS_INTERACOES)) {
+  if (!temColuna('interacoes', coluna)) {
+    db.exec(`ALTER TABLE interacoes ADD COLUMN ${coluna} ${tipo}`);
+    console.log(`[migracao] coluna interacoes.${coluna} criada.`);
+  }
+}
+
 module.exports = db;

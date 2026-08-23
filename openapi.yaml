@@ -43,6 +43,10 @@ tags:
     description: Somente admin via sessão
   - name: API Keys
     description: Somente admin via sessão
+  - name: Resumo de reunião
+    description: >-
+      Transcrição colada vira rascunho com decisões, próximos passos e objeções, para revisão
+      antes de virar registro no histórico. Nada é gravado sem confirmação explícita.
 
 security:
   - bearerAuth: []
@@ -379,6 +383,142 @@ paths:
         '403': { $ref: '#/components/responses/Erro403Csrf' }
         '404': { $ref: '#/components/responses/Erro404' }
 
+  /api/clientes/{id}/resumos:
+    parameters:
+      - $ref: '#/components/parameters/IdLead'
+    post:
+      tags: [Resumo de reunião]
+      operationId: criarRascunhoResumo
+      summary: Extrair rascunho de uma transcrição
+      description: >-
+        Envia a transcrição a um serviço de IA e devolve um rascunho para revisão.
+        **Não grava nada no histórico do cliente** — para gravar, confirme o rascunho.
+        Esta rota aceita corpo de até 512 KB (as demais seguem em 64 KB) e tem limite de
+        requisições próprio, porque cada chamada aciona um serviço externo pago.
+        Telefones, e-mails e documentos são mascarados antes do envio ao modelo.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NovoRascunhoResumo' }
+            example:
+              transcricao: "Maria: obrigada pela apresentação. Ficou definido que seguimos com o diagnóstico..."
+      responses:
+        '201':
+          description: Rascunho criado, aguardando revisão
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RascunhoResumo' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Csrf' }
+        '404': { $ref: '#/components/responses/Erro404' }
+        '413': { $ref: '#/components/responses/Erro413' }
+        '429': { $ref: '#/components/responses/Erro429' }
+        '503': { $ref: '#/components/responses/Erro503Ia' }
+
+  /api/resumos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdRascunho'
+    get:
+      tags: [Resumo de reunião]
+      operationId: obterRascunhoResumo
+      summary: Ler o rascunho em revisão
+      description: >-
+        Só o dono do rascunho o enxerga — a posse é da credencial que o criou.
+        Credencial diferente recebe `404`, nunca `403`: confirmar a existência de um
+        rascunho alheio já seria vazamento.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Rascunho
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RascunhoResumo' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '404': { $ref: '#/components/responses/Erro404' }
+    delete:
+      tags: [Resumo de reunião]
+      operationId: descartarRascunhoResumo
+      summary: Descartar o rascunho
+      description: Irreversível. Nada é gravado no histórico e a transcrição em revisão é apagada.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      responses:
+        '204': { description: Descartado }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Csrf' }
+        '404': { $ref: '#/components/responses/Erro404' }
+
+  /api/resumos/{id}/confirmar:
+    parameters:
+      - $ref: '#/components/parameters/IdRascunho'
+    post:
+      tags: [Resumo de reunião]
+      operationId: confirmarRascunhoResumo
+      summary: Confirmar o rascunho revisado
+      description: >-
+        Grava no histórico o conteúdo **como revisado** — não a versão que o modelo produziu.
+        A autoria e a marca de revisão vêm da credencial: sessão grava `revisao: humana`,
+        chave de API grava `revisao: sem_revisao`. Nenhum campo de negócio do cliente é
+        alterado, exceto a próxima ação quando `promover_proxima_acao` for enviado
+        explicitamente.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmacaoResumo' }
+            example:
+              resumo: "Maria aprovou o diagnóstico para o time de atendimento."
+              decisoes: [{ texto: "Seguir com o diagnóstico" }]
+              proximos_passos: [{ texto: "Enviar proposta", responsavel: "Farley", prazo: "2026-09-05" }]
+              objecoes: [{ texto: "Achou o prazo apertado" }]
+              promover_proxima_acao: { texto: "Enviar proposta", data: "2026-09-05" }
+      responses:
+        '201':
+          description: Registro criado no histórico
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Interacao' }
+        '400': { $ref: '#/components/responses/Erro400' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '403': { $ref: '#/components/responses/Erro403Csrf' }
+        '404': { $ref: '#/components/responses/Erro404' }
+        '409': { $ref: '#/components/responses/Erro409ProximaAcao' }
+
+  /api/interacoes/{id}/transcricao:
+    parameters:
+      - $ref: '#/components/parameters/IdInteracao'
+    get:
+      tags: [Resumo de reunião]
+      operationId: obterTranscricao
+      summary: Ler a transcrição de origem
+      description: >-
+        A transcrição é retida por 90 dias a partir da gravação e depois descartada
+        automaticamente. Passado o prazo a resposta é `200` com `disponivel: false` —
+        retenção cumprida não é erro. A transcrição **não** é incluída na exportação de
+        dados do titular.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Transcrição disponível, ou já descartada pela retenção
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TranscricaoResposta' }
+        '401': { $ref: '#/components/responses/Erro401' }
+        '404': { $ref: '#/components/responses/Erro404' }
+
   /api/hoje:
     get:
       tags: [Agenda]
@@ -481,6 +621,18 @@ components:
       required: true
       description: ID do lead
       schema: { type: integer }
+    IdRascunho:
+      name: id
+      in: path
+      required: true
+      description: ID do rascunho de resumo
+      schema: { type: integer }
+    IdInteracao:
+      name: id
+      in: path
+      required: true
+      description: ID da interação
+      schema: { type: integer }
 
   responses:
     Ok:
@@ -496,6 +648,44 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Erro' }
+    Erro413:
+      description: Corpo acima do limite da rota
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    Erro429:
+      description: Limite de requisições atingido
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    Erro409ProximaAcao:
+      description: >-
+        O cliente já tem próxima ação definida. O corpo traz o valor vigente para a
+        interface poder mostrar o que seria substituído antes de pedir confirmação.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Erro'
+              - type: object
+                properties:
+                  proxima_acao_vigente:
+                    type: object
+                    properties:
+                      proxima_acao: { type: string, example: "Ligar para confirmar" }
+                      proxima_acao_data: { type: string, example: "2026-09-01" }
+    Erro503Ia:
+      description: >-
+        Serviço de IA indisponível ou não configurado. Nada foi gravado e a transcrição
+        não se perdeu. `ia_configurada: false` significa que não adianta tentar de novo.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Erro'
+              - type: object
+                properties:
+                  ia_configurada: { type: boolean, example: false }
     Erro401:
       description: Não autenticado / credencial inválida
       content:
@@ -671,6 +861,29 @@ components:
         gerado_por_ia: { type: integer, enum: [0, 1], description: "1 quando criada via API key" }
         data: { type: string, example: "2026-06-06 14:35:00" }
         created_at: { type: string, example: "2026-06-06 14:35:00" }
+        revisao:
+          type: string
+          nullable: true
+          enum: [humana, sem_revisao]
+          description: >-
+            Responde uma pergunta diferente de `gerado_por_ia`: não "quem escreveu", mas
+            "alguém conferiu antes de salvar". `humana` = confirmado por pessoa em sessão;
+            `sem_revisao` = confirmado por chave de API, sem olho humano; `null` = anotação
+            comum, anterior a esta feature.
+        revisado_por:
+          type: integer
+          nullable: true
+          description: Usuário que confirmou. Nulo quando a confirmação veio de máquina.
+        revisado_em: { type: string, nullable: true, example: "2026-08-23 10:12:00" }
+        origem_registro:
+          type: string
+          nullable: true
+          enum: [resumo_reuniao]
+          description: "`resumo_reuniao` nas criadas a partir de uma transcrição."
+        transcricao_id:
+          type: integer
+          nullable: true
+          description: Presente na resposta da confirmação; a fonte vive 90 dias.
 
     NovaInteracao:
       type: object
@@ -826,3 +1039,119 @@ components:
           type: string
           description: Segredo completo — mostrado UMA única vez.
           example: "crm_cfee0db15f4292824106b073409bdac6"
+
+    NovoRascunhoResumo:
+      type: object
+      required: [transcricao]
+      properties:
+        transcricao:
+          type: string
+          maxLength: 200000
+          description: >-
+            Texto da transcrição da reunião. Fica guardado por 90 dias a partir da
+            confirmação e depois é descartado automaticamente.
+          example: "Farley: obrigado pelo tempo. Maria: o orçamento foi aprovado..."
+
+    ItemExtraido:
+      type: object
+      required: [texto]
+      properties:
+        texto: { type: string, minLength: 1, maxLength: 500, example: "Seguir com o diagnóstico" }
+
+    ProximoPasso:
+      type: object
+      required: [texto]
+      properties:
+        texto: { type: string, minLength: 1, maxLength: 500, example: "Enviar proposta" }
+        responsavel:
+          type: string
+          nullable: true
+          maxLength: 120
+          description: Nulo quando a transcrição não declara — o sistema não deduz.
+          example: "Farley"
+        prazo:
+          type: string
+          nullable: true
+          description: Data YYYY-MM-DD. Nulo quando a transcrição não declara prazo.
+          example: "2026-09-05"
+
+    RascunhoResumo:
+      type: object
+      description: >-
+        Resultado da extração aguardando decisão humana. Não é conteúdo do cliente até ser
+        confirmado, e desaparece ao ser confirmado ou descartado.
+      properties:
+        id: { type: integer, example: 3 }
+        cliente_id: { type: integer, example: 29 }
+        resumo: { type: string, maxLength: 2000 }
+        decisoes:
+          type: array
+          items: { $ref: '#/components/schemas/ItemExtraido' }
+        proximos_passos:
+          type: array
+          items: { $ref: '#/components/schemas/ProximoPasso' }
+        objecoes:
+          type: array
+          items: { $ref: '#/components/schemas/ItemExtraido' }
+        sugestao_proxima_acao:
+          type: object
+          nullable: true
+          description: Sugestão derivada de um próximo passo. Só afeta o cliente por ação humana.
+          properties:
+            texto: { type: string, nullable: true }
+            data: { type: string, nullable: true }
+        transcricao: { type: string, description: A fonte, devolvida para sobreviver a um reload da revisão. }
+        retencao_dias: { type: integer, example: 90 }
+        modelo: { type: string, nullable: true, example: "claude-opus-5" }
+        tokens_entrada: { type: integer, nullable: true, example: 12480 }
+        tokens_saida: { type: integer, nullable: true, example: 640 }
+        duracao_ms:
+          type: integer
+          nullable: true
+          description: >-
+            Quanto a chamada ao serviço de IA levou, em milissegundos. Existe para que o
+            critério de desempenho da extração (95% em até 30 s) possa ser verificado em vez
+            de apenas afirmado.
+          example: 8420
+        created_at: { type: string, example: "2026-08-23 10:05:00" }
+
+    ConfirmacaoResumo:
+      type: object
+      description: >-
+        O rascunho como ficou depois da revisão. O servidor grava o que recebe aqui, não o
+        que o modelo produziu. Campos de autoria e de revisão não existem neste contrato:
+        enviá-los não tem efeito, porque vêm da credencial autenticada.
+      properties:
+        resumo: { type: string, maxLength: 2000 }
+        decisoes:
+          type: array
+          items: { $ref: '#/components/schemas/ItemExtraido' }
+        proximos_passos:
+          type: array
+          items: { $ref: '#/components/schemas/ProximoPasso' }
+        objecoes:
+          type: array
+          items: { $ref: '#/components/schemas/ItemExtraido' }
+        promover_proxima_acao:
+          type: object
+          nullable: true
+          description: >-
+            Opcional. Ausente, o cliente fica exatamente como estava. Presente quando o
+            cliente já tem próxima ação, exige `substituir: true` — senão a resposta é 409.
+          required: [texto, data]
+          properties:
+            texto: { type: string, maxLength: 500 }
+            data: { type: string, example: "2026-09-05" }
+            substituir: { type: boolean, default: false }
+
+    TranscricaoResposta:
+      type: object
+      properties:
+        disponivel: { type: boolean, example: true }
+        motivo:
+          type: string
+          enum: [expirada]
+          description: Presente apenas quando `disponivel` é false.
+        texto: { type: string }
+        expira_em: { type: string, example: "2026-11-21" }
+        created_at: { type: string, example: "2026-08-23 10:12:00" }

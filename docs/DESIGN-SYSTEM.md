@@ -26,13 +26,19 @@ destaques — dá peso editorial ao dado sem precisar de negrito berrante.
 de script. Os gráficos são SVG gerado em JavaScript. Isso mantém `script-src` em `'self'` — decisão
 de segurança que o design respeita, não contorna.
 
-> **Ressalva honesta sobre a CSP.** A política atual da v1 **não** é tão restritiva quanto esta
-> frase sugere: ela carrega `'unsafe-inline'` em `script-src` e `script-src-attr`, porque os
-> elementos gerados usam `onclick`, `ondragstart` e `ondrop` em atributo. Isso anula boa parte da
-> proteção contra XSS que a CSP deveria oferecer. A correção é RNF-16 do
-> [PRD de Reconstrução](PRD-Reconstrucao-CRM.md): eventos por **delegação**, um listener por região,
-> `data-*` para identificar o alvo — e aí `'unsafe-inline'` cai. Até lá, o escape de saída é a
-> **única** linha de defesa (ver §6).
+> **A CSP hoje vale o que diz — e nem sempre valeu.** Até 23/08/2026 a política real carregava
+> `'unsafe-inline'` em `script-src` e `script-src-attr`, porque os elementos gerados usavam
+> `onclick`, `ondragstart` e `ondrop` em atributo. Isso anulava boa parte da proteção contra XSS
+> que a política aparentava dar, e o escape de saída era a **única** linha de defesa.
+>
+> A dívida foi paga: todos os handlers viraram **delegação de eventos** — um dispatcher por região,
+> alvo identificado por `data-*` — e a política servida passou a ser
+> `script-src 'self'; script-src-attr 'none'`. O escape de saída (§6) continua sendo a primeira
+> linha; a CSP voltou a ser a segunda, de verdade.
+>
+> **A regra que mantém isso vivo é a 4 da §9.** Um `onclick` novo não "degrada": ele simplesmente
+> não dispara no navegador. `tests/csp.test.js` trava os dois lados — o cabeçalho e a ausência de
+> handler em atributo — para a diretiva não reabrir em silêncio.
 
 **6. Todo estado tem forma.** Vazio, carregando, erro e sucesso são estados desenhados. Uma lista
 vazia mostra frase em itálico serifado, nunca um retângulo em branco.
@@ -172,6 +178,7 @@ Grade base de **4px**. Valores usados: 4 · 6 · 8 · 10 · 12 · 14 · 16 · 18
 | Padrão | Fundo branco, borda `--border-2`, texto `--fg` | Ação secundária |
 | `.primario` | Fundo terracota, texto branco | **Uma por tela.** Salvar, entrar, criar |
 | `.perigo` | Transparente, texto e borda `--danger` | Excluir, revogar |
+| `.pequeno` | Padding `4px 10px`, 14px→12px, margem à esquerda | Ação **dentro** de um item de lista ou ao lado de um título de seção. Combina com `.perigo` |
 
 Padding `10px 18px`, raio `--r-3`, fonte sans 14px/500. **Hover:** eleva 1px, ganha
 `--shadow-sm` e escurece a borda. **Foco:** anel de 3px em `rgba(226,101,70,0.12)` — nunca
@@ -267,6 +274,67 @@ confiável. **Métrica sem contexto de confiabilidade é métrica que mente.**
 
 ---
 
+### 3.15 Selos de revisão — `.chip-revisao` · `.chip-atencao`
+
+Respondem uma pergunta que o `.badge-ia` não responde. `.badge-ia` diz **quem escreveu**;
+estes dizem **se alguém conferiu antes de salvar**.
+
+| Classe | Cor | Significa |
+|---|---|---|
+| `.chip-revisao` | fundo `rgba(79,122,90,0.14)`, texto `--success` | Uma pessoa leu e confirmou |
+| `.chip-atencao` | fundo `rgba(214,162,78,0.18)`, texto `--warning` | Confirmado por automação, **sem** conferência humana |
+
+Mesma forma do `.badge-ia`: sans 10px/600, `letter-spacing` `0.08em`, raio `--r-pill`.
+`.chip-atencao` usa a cor de **aviso**, não a de perigo — não é erro, é informação que muda como
+se lê o conteúdo. Os três estados possíveis do histórico:
+
+| `gerado_por_ia` | `revisao` | Exibição |
+|---|---|---|
+| `0` | `NULL` | Anotação humana — sem selo |
+| `1` | `humana` | `.badge-ia` + `.chip-revisao` |
+| `1` | `sem_revisao` | `.badge-ia` + `.chip-atencao` |
+
+### 3.16 Aviso de IA não salva — `.aviso-ia`
+
+Texto em `--ac-orange` sobre o subtítulo do modal de revisão. Diz duas coisas ao mesmo tempo:
+o conteúdo veio de um modelo **e** ainda não foi gravado. Some no instante em que a pessoa
+confirma — é aviso de estado transitório, não rótulo permanente.
+
+### 3.17 Aviso de retenção — `.aviso-retencao`
+
+Caixa em `--bg-elev` com borda `--border-2`, raio `--r-3`, texto `--fg-muted` 13px. Aparece
+**antes** de a pessoa acionar uma ação que guarda dado de terceiro, dizendo por quanto tempo ele
+fica. Não é aviso de erro nem de sucesso: é consentimento informado, e por isso não usa cor de
+estado nenhuma.
+
+### 3.18 Item editável de revisão — `.item-revisao`
+
+Modificador de `.item` para quando a linha deixa de ser clicável e passa a ser editável:
+`display: block`, sem `transform` no hover, sem cursor de ponteiro. Contém um `.campo` com
+`textarea`, opcionalmente uma `.linha-detalhes`, e um `.btn.pequeno.perigo` para remover.
+
+### 3.19 Linha de detalhes — `.linha-detalhes`
+
+`flex` com `gap` de 8px e quebra, para os campos secundários de um item (responsável, prazo) mais
+a ação que o promove. Os `input` herdam `--bg-elev`, `--border-2` e raio `--r-3`, e o foco troca a
+borda por `--ac-orange` como o resto dos campos. `flex: 1 1 160px` mantém a linha utilizável a
+partir de 360px.
+
+### 3.20 Bloco em destaque — `.destaque-promocao`
+
+Barra de 3px em `--ac-orange` à esquerda, com recuo. Marca o único bloco de uma tela que
+representa uma **alteração que será aplicada a um dado real** — no resumo de reunião, a próxima
+ação que vai substituir a vigente. Use com parcimônia: se dois blocos disputam o destaque,
+nenhum destaca.
+
+### 3.21 Fonte conferível — `.transcricao-fonte`
+
+`pre` com `white-space: pre-wrap`, fonte mono 13px, `--bg-elev` e borda `--border-2`. Rola
+**dentro da própria caixa** (`overflow` nos dois eixos, `max-height: 50vh`): texto longo colado
+por terceiro não pode empurrar o corpo da página para o lado (§5).
+
+---
+
 ## 4. Gráficos
 
 Todos gerados como SVG em JavaScript, sem biblioteca.
@@ -322,9 +390,10 @@ function esc(s) {
 ```
 
 > Esta é a **defesa que não aparece na tela** — e por isso a mais fácil de esquecer numa
-> reconstrução: nada quebra quando se omite. Enquanto a CSP carregar `'unsafe-inline'` (§1,
-> ressalva), ela é a única barreira entre um campo de texto e a execução de script na sessão do
-> admin.
+> reconstrução: nada quebra quando se omite. Com a CSP fechada (§1), ela deixou de ser a **única**
+> barreira entre um campo de texto e a execução de script na sessão do admin — mas continua sendo a
+> **primeira**, e a que atua antes de a política precisar entrar. Defesa em profundidade quer dizer
+> as duas, não uma no lugar da outra.
 
 ---
 
@@ -373,7 +442,9 @@ escritas em português, para pessoas, e não em código técnico.
 3. **Todo dado dinâmico é escapado** antes de entrar no DOM (§6). Componente novo que monta HTML sem
    passar pelo escape é revisão reprovada — mesmo que o dado "venha do nosso banco".
 4. **Sem handler inline.** Nada de `onclick` em atributo: use delegação de eventos com `data-*`. É o
-   que permite à CSP dispensar `'unsafe-inline'`.
+   que permite à CSP dispensar `'unsafe-inline'` — e desde 23/08/2026 ela dispensa. Um handler em
+   atributo não degrada a experiência: ele **não executa**, e o botão nasce morto. `tests/csp.test.js`
+   reprova antes disso chegar ao navegador.
 5. **Uma ação primária por tela.** Se aparecer a segunda, uma delas é secundária.
 6. **Todo estado desenhado.** Vazio, carregando, erro e sucesso antes de considerar a tela pronta.
 7. **Toda ação destrutiva confirma.** E é vermelha.

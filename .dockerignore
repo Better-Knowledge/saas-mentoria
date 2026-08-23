@@ -12,3 +12,6 @@ data
 docs
 README.md
 .claude
+tests
+specs
+scripts/medir-extracao.js

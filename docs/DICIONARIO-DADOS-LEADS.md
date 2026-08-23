@@ -150,3 +150,69 @@ curl -X POST https://mentoria.crm.better-knowledge.com/api/clientes \
 | Mover etapa / definir resultado | `PUT /api/clientes/:id/etapa` |
 | Registrar interação (histórico) | `POST /api/clientes/:id/interacoes` |
 | Excluir lead (LGPD) | `DELETE /api/clientes/:id` |
+
+---
+
+## Resumo de reunião (feature 002) — tabelas e colunas novas
+
+### Colunas aditivas em `interacoes`
+
+| Coluna | Tipo | Valores | O que significa |
+|---|---|---|---|
+| `revisao` | TEXT | `humana` · `sem_revisao` · `NULL` | **Não** é "quem escreveu" — é "alguém conferiu antes de salvar". `NULL` em anotação comum, anterior à feature |
+| `revisado_por` | INTEGER | `usuarios.id` · `NULL` | Quem confirmou. Nulo quando a confirmação veio de máquina |
+| `revisado_em` | TEXT | timestamp | Quando foi confirmado |
+| `origem_registro` | TEXT | `resumo_reuniao` · `NULL` | `resumo_reuniao` nas criadas a partir de transcrição |
+
+`gerado_por_ia` não mudou de significado. As duas colunas juntas produzem os três estados
+que a ficha exibe:
+
+| `gerado_por_ia` | `revisao` | Como aparece |
+|---|---|---|
+| `0` | `NULL` | Anotação humana comum — sem selo |
+| `1` | `humana` | Badge IA + selo "revisado" |
+| `1` | `sem_revisao` | Badge IA + chip de atenção "não revisado" |
+
+### `resumo_rascunhos` — estado transitório
+
+Rascunho entre a extração e a decisão humana. **Não é conteúdo do cliente:** desaparece ao ser
+confirmado ou descartado, e é apagado pela purga após 24 h de abandono.
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `cliente_id` | INTEGER | FK `clientes` ON DELETE CASCADE |
+| `payload` | TEXT | JSON: `resumo`, `decisoes[]`, `proximos_passos[]`, `objecoes[]` |
+| `transcricao_texto` | TEXT | Ainda não promovida a `transcricoes` |
+| `dono_tipo` / `dono_id` | TEXT / INTEGER | A posse é da **credencial**: rascunho da chave A não é visível à chave B |
+| `modelo`, `tokens_entrada`, `tokens_saida` | TEXT / INTEGER | Rastreabilidade e custo observado da chamada |
+
+### `transcricoes` — a fonte, por 90 dias
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `interacao_id` | INTEGER UNIQUE | FK `interacoes` ON DELETE CASCADE |
+| `cliente_id` | INTEGER | FK `clientes` ON DELETE CASCADE — redundante de propósito, para a purga varrer sem join |
+| `texto` | TEXT | Como colada. O mascaramento é só do que **sai** para o modelo |
+| `expira_em` | TEXT | Data da gravação + 90 dias, calculada no servidor |
+
+**Não entra em `GET /api/clientes/:id/export`.** Só o registro revisado entra na exportação do
+titular — decisão registrada em `docs/SEGURANCA.md`, com a tensão que ela cria.
+
+### `auditoria` — trilha de alterações (PRD RF-84)
+
+Schema idêntico ao do PRD §8.2. Sem FK para `clientes`: sobrevive à exclusão do titular, porque
+apagar o dado pessoal é direito dele e apagar a prova de que ele foi apagado não é. Por isso
+`valor_anterior` e `valor_novo` **nunca** guardam conteúdo de transcrição, de resumo ou de campo
+de contato — esses viram `[omitido]`.
+
+### Endpoints da feature
+
+| Ação | Rota | Ferramenta MCP |
+|---|---|---|
+| Extrair rascunho (não grava) | `POST /api/clientes/:id/resumos` | `extrair_resumo_reuniao` |
+| Ler rascunho (só o dono) | `GET /api/resumos/:id` | `obter_rascunho_resumo` |
+| Confirmar o revisado | `POST /api/resumos/:id/confirmar` | `confirmar_resumo_reuniao` |
+| Descartar | `DELETE /api/resumos/:id` | `descartar_resumo_reuniao` |
+| Ler a transcrição de origem | `GET /api/interacoes/:id/transcricao` | `obter_transcricao` |

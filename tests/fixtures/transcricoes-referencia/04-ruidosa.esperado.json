@@ -1,0 +1,9 @@
+{
+  "decisoes": [
+    { "texto": "Remarcar a conversa por causa da qualidade da ligação" }
+  ],
+  "proximos_passos": [
+    { "texto": "Ana envia mensagem depois para remarcar", "responsavel": "Ana", "prazo": null }
+  ],
+  "objecoes": []
+}
