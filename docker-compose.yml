@@ -1,8 +1,8 @@
-# /opt/docker-services/crm-mentoria/docker-compose.yml
+# /opt/docker-services/cpdf-crm-mentoria/docker-compose.yml
 services:
   app:
     build: .
-    container_name: crm-mentoria
+    container_name: cpdf-crm-mentoria
     restart: unless-stopped
     env_file:
       - ./.env
@@ -12,12 +12,12 @@ services:
       - ./data:/app/data   # persiste o SQLite (crm.db + WAL)
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.crm-mentoria.entrypoints=websecure"
-      - "traefik.http.routers.crm-mentoria.rule=Host(`mentoria.crm.better-knowledge.com`)"
-      - "traefik.http.routers.crm-mentoria.service=crm-mentoria"
-      - "traefik.http.routers.crm-mentoria.tls.certresolver=letsencrypt"
-      - "traefik.http.services.crm-mentoria.loadbalancer.server.port=3000"
-      - "traefik.http.routers.crm-mentoria.middlewares=secure-headers@file"
+      - "traefik.http.routers.cpdf-crm-mentoria.entrypoints=websecure"
+      - "traefik.http.routers.cpdf-crm-mentoria.rule=Host(`cpdf-crm-mentoria.better-knowledge.com`)"
+      - "traefik.http.routers.cpdf-crm-mentoria.service=cpdf-crm-mentoria"
+      - "traefik.http.routers.cpdf-crm-mentoria.tls.certresolver=letsencrypt"
+      - "traefik.http.services.cpdf-crm-mentoria.loadbalancer.server.port=3000"
+      - "traefik.http.routers.cpdf-crm-mentoria.middlewares=secure-headers@file"
       - "traefik.docker.network=web"
 
 networks:

@@ -245,8 +245,22 @@ campo de negócio do cliente em nenhum dos dois planos.
 `tests/fixtures/transcricoes-referencia/` e informa a taxa de itens aceitos sem edição
 (meta: ≥ 70%). Fica fora de `npm test` porque chama a API paga, e avisa o custo antes de rodar.
 
-> **Linha de base medida:** ainda não executada — exige `ANTHROPIC_API_KEY`. Registre aqui o
-> número e a data após a primeira execução.
+> **Linha de base medida em 23/08/2026** (`claude-opus-5`): o script reportou **40,9%** (9 de 22
+> itens), abaixo do limiar de 70%. **Esse número não mede o que parece medir.**
+>
+> A inspeção manual do caso `03-objecao-forte` mostrou o modelo extraindo **as três objeções
+> corretamente** — o comparador é que as rejeitou. Ele usa sobreposição de tokens com limiar 0,6, e
+> "Achou o valor caro, acima do esperado" contra "Preço acima do esperado: proposta de trinta e dois
+> mil foi considerada cara" pontua 0,29: mesma informação, palavras diferentes. Paráfrase é o modo
+> normal de o modelo escrever, então o instrumento reprova justamente o comportamento desejado.
+>
+> **Conclusão honesta:** a qualidade da extração ainda não foi medida. O número acima é o teto
+> inferior do instrumento, não o desempenho do modelo. Enquanto o comparador não julgar equivalência
+> semântica em vez de palavras repetidas, o SC-005 continua sem verificação — e é assim que ele deve
+> ser lido, em vez de como "a extração está ruim".
+>
+> Desempenho observado nas seis chamadas reais: **13 a 20 s** por transcrição (limite do SC-002 é
+> 30 s) e **US$ 0,025 a US$ 0,04** por extração de reunião curta.
 
 ## Privacidade (LGPD)
 
