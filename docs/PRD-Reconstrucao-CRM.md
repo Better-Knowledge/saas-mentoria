@@ -133,6 +133,10 @@ Vai para o [`ROADMAP.md`](ROADMAP.md), com fase e justificativa:
 
 - Integração com WhatsApp (Evolution API Cloud, Z-API), handoff de conversas e campanhas
 - Resumos de conversa gerados por IA a partir de transcrições
+  > **Promovido em 23/08/2026.** A fatia "colar transcrição → revisar → salvar" saiu deste
+  > "fora do escopo" e virou a feature `002-resumo-reuniao-ia` (ver `specs/002-resumo-reuniao-ia/`).
+  > O restante do item — resumo a partir de conversa importada, sugestão de valor e
+  > enriquecimento contínuo — segue fora do escopo da v2, em `ROADMAP.md` F2.
 - Envio de propostas, orçamentos e documentos pelo sistema
 - Lembretes saindo para e-mail e Google Agenda
 - Permissões granulares além de `admin` / `assistente`

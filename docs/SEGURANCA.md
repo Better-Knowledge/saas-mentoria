@@ -237,3 +237,122 @@ usuários e chaves de API; **assistente** usa o CRM inteiro mas não administra 
 
 **Conclusão:** sem achados críticos. A autorização é consistentemente do lado do servidor e as
 proteções de sessão acompanham as mudanças de senha e de papel.
+
+---
+
+## Resumo automático de reunião — revisão de segurança 23/08/2026
+
+Feature `002-resumo-reuniao-ia`. Esta é a primeira funcionalidade do produto que **sai para a
+rede** e que **guarda dado pessoal de terceiros**. Os três pontos abaixo são decisões tomadas
+com consciência do custo, não descuidos.
+
+### Correção de uma regressão que quase entramos
+
+O plano original desta feature mandava estender `resolverPrincipal` para também ler o cookie de
+sessão. Isso teria aberto um vazamento entre os dois planos de credencial: `requireBearer`
+valida apenas o **prefixo** do header antes de chamar a função, então uma requisição com
+`Authorization: Bearer <lixo>` acompanhada de um cookie de sessão válido cairia no fallback e
+entraria em `POST /mcp` como principal humano — credencial de pessoa operando o plano de
+máquina, num endpoint que não exige CSRF.
+
+**Correção aplicada:** `auth.js` agora tem `resolverBearer` e `resolverSessao` separadas.
+`requireBearer` usa só a primeira; `resolverPrincipal` (rotas `/api`, onde os dois planos são
+legítimos) escolhe entre elas e **não faz fallback** — um Bearer inválido devolve `null`, nunca
+cai para a sessão. `tests/resumo-api.test.js` fixa a fronteira com quatro casos de regressão.
+
+### 1. Segredo do provedor de IA
+
+- `ANTHROPIC_API_KEY` é lida de `process.env` dentro de `ia/extrator.js` e não sai de lá: não é
+  devolvida em resposta, não vai para log, não entra em mensagem de erro.
+- O SDK só é carregado quando há chave (`require` tardio) — sem ela o produto sobe normalmente
+  e apenas a feature aparece indisponível.
+- A imagem Docker não carrega o segredo; ele vem do ambiente.
+
+### 2. Minimização antes do envio — e o limite honesto dela
+
+`mascarar()` substitui e-mails, telefones brasileiros, CPF e CNPJ antes de a transcrição sair da
+máquina. O modelo recebe a transcrição e mais nada: nenhum dado do cadastro é anexado.
+
+**O que essa técnica não faz, e que ninguém deve supor que faça:** mascaramento por padrão
+textual não pega tudo. Um telefone ditado por extenso ("meu número é onze, nove oito...") passa
+inteiro. Um endereço passa. Um nome próprio passa — e passa de propósito, porque sem nome o
+resumo perde a utilidade. É **redução de exposição, não garantia**, e `tests/extrator.test.js`
+tem um caso que fixa esse limite por escrito em vez de fingir que ele não existe.
+
+Uma sequência de 11 dígitos sem pontuação é ambígua entre celular e CPF; a regra adotada rotula
+como telefone. Os dois são mascarados de qualquer forma — o rótulo é que difere.
+
+### 3. Injeção de prompt
+
+A transcrição é conteúdo hostil por definição: qualquer pessoa numa reunião pode ditar uma
+instrução. Quatro defesas simultâneas:
+
+1. a transcrição **nunca** entra no `system`; vai delimitada numa mensagem `user`, precedida da
+   instrução de que o conteúdo delimitado é dado a analisar, jamais instrução a seguir;
+2. **nenhuma ferramenta é declarada** na chamada — não há nada para uma instrução injetada
+   sequestrar: o modelo não lê arquivo, não busca na web, não escreve no banco;
+3. **saída estruturada** — o formato é imposto pelo schema, não pelo texto;
+4. **escape na renderização** — a saída passa por `esc()` antes de qualquer `innerHTML`.
+
+**O que continua possível:** nenhuma dessas defesas impede o modelo de ser *convencido* a
+escrever uma decisão falsa no resumo. O que impede é a pessoa lendo antes de salvar. O corpus de
+referência tem um caso de injeção (`05-injecao.txt`) exatamente para medir isso.
+
+**E no plano de máquina essa defesa não existe.** Uma chave de API pode confirmar sem revisão —
+decisão do responsável pelo produto, registrada na spec. O controle compensatório é que o
+registro entra marcado como `revisao: sem_revisao`, visível na ficha e na trilha. Continua
+valendo, nos dois planos, que confirmar **não altera campo de negócio** do cliente: um erro de
+leitura do modelo não vira proposta errada sem ação humana explícita.
+
+### 4. Retenção de 90 dias — e a tensão que ela cria
+
+Decisão do responsável pelo produto: a transcrição é guardada por 90 dias e **não** entra na
+exportação de dados do titular.
+
+**A tensão, dita com todas as letras:** a transcrição contém falas do **próprio titular**, além
+de terceiros. Mantê-la 90 dias e excluí-la da exportação significa que, nesse período, existe
+dado do titular no sistema que a exportação não entrega. As duas alternativas coerentes seriam
+não reter a transcrição (minimização máxima) ou incluí-la na exportação (rastreabilidade
+máxima). A decisão registrada é a primeira, e está aqui para ser revista, não para ser
+esquecida.
+
+O que **está** garantido: exclusão do cliente apaga a transcrição em cascata, antes do prazo;
+a purga roda no boot, a cada 24 h e por `npm run purgar`; e o registro revisado sobrevive ao
+descarte da fonte, com a interface dizendo que a fonte expirou em vez de mostrar erro.
+
+### 5. Trilha de auditoria
+
+A tabela `auditoria` (PRD RF-84) foi criada por esta feature, com o schema do PRD §8.2 — a
+fundação v2 a herda em vez de recriá-la. `audit.js` **recusa** gravar conteúdo de transcrição,
+de resumo ou de campo de contato: uma lista de campos sensíveis vira `[omitido]`. A trilha não
+tem FK para `clientes`, de propósito: ela sobrevive à exclusão do titular, porque apagar o dado
+pessoal é direito dele e apagar a prova de que ele foi apagado não é.
+
+### CSP fechada — a pendência foi paga (convergência, 23/08/2026)
+
+A CSP do produto declarava uma proteção contra XSS que **não tinha**: `script-src` carregava
+`'unsafe-inline'` e havia `script-src-attr: 'unsafe-inline'`, porque o front da v1 usava 21
+`onclick` mais cinco handlers de arraste em atributo. Enquanto isso valeu, o escape de saída era
+a única linha de defesa real.
+
+**Corrigido.** Todos os handlers inline foram substituídos por delegação — um dispatcher de
+clique para o app, um para o modal de resumo, e os eventos de arraste delegados no container do
+kanban, com o alvo identificado por `data-*`. A política agora servida é:
+
+```
+script-src 'self'; script-src-attr 'none'
+```
+
+Verificado com o app rodando: ficha, funil com arraste ponta a ponta, gestão de usuários e
+chaves de API funcionam sob a política fechada, com o console limpo. `tests/csp.test.js` trava
+os dois lados — o cabeçalho e a ausência de handler em atributo — para que a diretiva não
+reabra em silêncio.
+
+Um efeito colateral bom: o botão que copiava a chave de API embutia o **segredo em texto dentro
+do atributo `onclick`**, legível por qualquer script ou extensão que lesse o documento. Agora a
+chave revelada vive só numa variável em memória, e é limpa quando a sessão termina.
+
+**Ressalva honesta:** remover o `Object.assign(window, {...})` não tirou as funções do objeto
+global — em script clássico, toda `function` de topo já é propriedade de `window` por definição
+da linguagem. O que sumiu foi a re-exportação explícita. Tirar de fato exigiria envolver o
+arquivo num módulo ou IIFE, o que é refatoração de fundação.

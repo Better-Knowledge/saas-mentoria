@@ -200,6 +200,19 @@ marcada como gerada por IA, com os dados estruturados que dá para extrair com s
 
 ## F2.1 Resumo de conversa
 
+> **STATUS: PARCIALMENTE CONSTRUÍDO (23/08/2026).** A fatia "colar transcrição → revisar →
+> salvar" saiu do roadmap e virou a feature `002-resumo-reuniao-ia`, construída sem depender da
+> importação de WhatsApp da F1. O que continua aqui: resumo disparado pelo handoff de conversa,
+> sugestão de valor e de tipo de cliente, e o enriquecimento contínuo (F2.3).
+>
+> **Uma das regras inegociáveis abaixo mudou.** A regra 1 dizia que sugestão nunca vira gravação
+> automática e que a confirmação é sempre humana. Na feature 002, o responsável pelo produto
+> decidiu que uma **credencial de máquina pode confirmar o próprio rascunho sem revisão humana**.
+> A parte da regra que sobreviveu, e que é a que protege contra o erro caro: **confirmar nunca
+> altera campo de negócio** — valor, próxima ação, etapa e tipo continuam exigindo ação
+> explícita, nos dois planos de credencial. O registro confirmado por máquina entra marcado como
+> "não revisado", na ficha e na auditoria.
+
 Ao fazer o handoff — ou sob demanda, por botão na ficha — o CRM envia a conversa a um modelo e
 recebe:
 

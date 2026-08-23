@@ -119,4 +119,75 @@ export const TOOLS = [
     annotations: { title: 'Excluir cliente', readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: false },
     run: (crm, autor, { id }) => crm.excluirCliente(id),
   },
+
+  // ----- Resumo de reunião (feature 002) -----
+  // Paridade com as rotas REST de contracts/rest-resumos.md. A validação autoritativa
+  // acontece uma vez só, no crm-service, com o schema de ia/schema-resumo.js; a forma
+  // declarada aqui existe para o agente descobrir o que enviar (research.md §2).
+  {
+    name: 'extrair_resumo_reuniao',
+    description:
+      'Extrai decisões, próximos passos e objeções de uma transcrição de reunião e devolve um '
+      + 'rascunho para revisão. NÃO grava nada no histórico do cliente — para gravar, chame '
+      + 'confirmar_resumo_reuniao. Cada chamada aciona um serviço externo de IA e tem custo.',
+    inputSchema: {
+      id: idCliente,
+      transcricao: z.string().min(1).max(200000).describe('Texto da transcrição (≤ 200.000 caracteres)'),
+    },
+    annotations: {
+      title: 'Extrair resumo de reunião',
+      readOnlyHint: false, idempotentHint: false, destructiveHint: false,
+      // Única ferramenta do catálogo que alcança um serviço externo — o agente merece saber.
+      openWorldHint: true,
+    },
+    run: (crm, autor, { id, transcricao }, principal) =>
+      crm.resumoReuniao.criarRascunho(id, transcricao, principal),
+  },
+  {
+    name: 'obter_rascunho_resumo',
+    description: 'Retorna um rascunho de resumo em revisão. Só o dono do rascunho o enxerga.',
+    inputSchema: { id: z.number().int().positive().describe('ID do rascunho') },
+    annotations: { title: 'Obter rascunho', readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    run: (crm, autor, { id }, principal) => crm.resumoReuniao.obterRascunho(id, principal),
+  },
+  {
+    name: 'confirmar_resumo_reuniao',
+    description:
+      'Grava o rascunho revisado como interação no histórico do cliente. QUANDO CHAMADA POR UMA '
+      + 'CHAVE DE API, o registro é gravado como NÃO REVISADO POR HUMANO e assim aparece na ficha. '
+      + 'Não altera nenhum campo de negócio do cliente: para mudar a próxima ação, use '
+      + 'atualizar_cliente numa chamada separada.',
+    inputSchema: {
+      id: z.number().int().positive().describe('ID do rascunho'),
+      resumo: z.string().max(2000).optional(),
+      decisoes: z.array(z.object({ texto: z.string().min(1).max(500) })).optional(),
+      proximos_passos: z.array(z.object({
+        texto: z.string().min(1).max(500),
+        responsavel: z.string().max(120).nullable().optional(),
+        prazo: z.string().describe('Data YYYY-MM-DD').nullable().optional(),
+      })).optional(),
+      objecoes: z.array(z.object({ texto: z.string().min(1).max(500) })).optional(),
+    },
+    annotations: { title: 'Confirmar resumo', readOnlyHint: false, idempotentHint: false, openWorldHint: false },
+    run: (crm, autor, { id, ...revisado }, principal) =>
+      crm.resumoReuniao.confirmarRascunho(id, revisado, principal),
+  },
+  {
+    name: 'descartar_resumo_reuniao',
+    description:
+      'Descarta o rascunho permanentemente. IRREVERSÍVEL: a transcrição associada é apagada junto '
+      + 'e a extração precisaria ser refeita, com novo custo.',
+    inputSchema: { id: z.number().int().positive().describe('ID do rascunho') },
+    annotations: { title: 'Descartar rascunho', readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: false },
+    run: (crm, autor, { id }, principal) => crm.resumoReuniao.descartarRascunho(id, principal),
+  },
+  {
+    name: 'obter_transcricao',
+    description:
+      'Retorna a transcrição de origem de um registro de reunião. Ela é retida por 90 dias; '
+      + 'depois disso a resposta traz disponivel:false — o registro permanece, a fonte não.',
+    inputSchema: { id: z.number().int().positive().describe('ID da interação') },
+    annotations: { title: 'Obter transcrição', readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    run: (crm, autor, { id }) => crm.resumoReuniao.obterTranscricao(id),
+  },
 ];

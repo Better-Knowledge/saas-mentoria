@@ -189,6 +189,65 @@ curl -X POST http://localhost:3000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
+## Resumo automático de reunião
+
+Você cola a transcrição na ficha do cliente, o sistema extrai **decisões**, **próximos passos**
+e **objeções**, e você revisa antes de qualquer coisa ser salva. Nada entra no histórico sem
+sua confirmação.
+
+### Configuração
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...     # obrigatória para a extração
+IA_MODELO=claude-opus-5          # opcional; trocar aqui não exige mexer no código
+IA_MAX_TOKENS_ENTRADA=60000      # opcional; teto de custo por chamada
+```
+
+**Sem a chave, o servidor sobe normalmente** e só a ação de resumo aparece indisponível.
+Nenhuma outra tela é afetada.
+
+### Quanto custa apertar o botão
+
+Esta é a primeira funcionalidade do CRM com **custo por uso**. Uma transcrição de reunião de
+uma hora fica na ordem de 10 a 15 mil tokens de entrada; a saída fica abaixo de 2 mil. Com
+`claude-opus-5` (US$ 5,00 por 1M de entrada, US$ 25,00 por 1M de saída), isso dá
+**aproximadamente US$ 0,10 a US$ 0,13 por extração**.
+
+Três limites protegem contra surpresa na fatura, todos no servidor:
+
+1. transcrição acima de 200.000 caracteres é recusada antes de qualquer chamada;
+2. os tokens são contados antes do envio e comparados a `IA_MAX_TOKENS_ENTRADA`;
+3. limite dedicado de 20 extrações por hora por credencial.
+
+Trocar `IA_MODELO` por um modelo menor reduz o custo — é uma decisão sua, e o número acima
+existe para você tomá-la com informação.
+
+### O que acontece com a transcrição
+
+- É **guardada por 90 dias** para você poder conferir a fonte, e depois descartada
+  automaticamente (no boot do servidor, a cada 24 h, ou por `npm run purgar`).
+- É apagada imediatamente se o cliente for excluído.
+- **Não** entra na exportação de dados do titular — apenas o registro revisado entra.
+- Telefones, e-mails, CPF e CNPJ são **mascarados antes do envio** ao modelo. É redução de
+  exposição, não garantia: mascaramento por padrão textual não pega um telefone ditado por
+  extenso. O limite está registrado em [docs/SEGURANCA.md](docs/SEGURANCA.md).
+
+### Automações também podem usar
+
+Uma chave de API pode extrair **e** confirmar sem revisão humana, pelas ferramentas MCP. Nesse
+caso o registro entra marcado como **não revisado** — na ficha e na trilha de auditoria — para
+que a diferença entre "alguém conferiu" e "ninguém olhou" não se perca. Confirmar nunca altera
+campo de negócio do cliente em nenhum dos dois planos.
+
+### Qualidade da extração
+
+`npm run medir-extracao` roda o extrator real sobre o corpus de referência versionado em
+`tests/fixtures/transcricoes-referencia/` e informa a taxa de itens aceitos sem edição
+(meta: ≥ 70%). Fica fora de `npm test` porque chama a API paga, e avisa o custo antes de rodar.
+
+> **Linha de base medida:** ainda não executada — exige `ANTHROPIC_API_KEY`. Registre aqui o
+> número e a data após a primeira execução.
+
 ## Privacidade (LGPD)
 
 - Dados sensíveis: contato pessoal, conteúdo de conversas, valores/propostas.
@@ -196,6 +255,8 @@ curl -X POST http://localhost:3000/mcp \
 - Cada registro guarda **quem criou** (humano ou IA) e **quando** (auditoria).
 - Endpoints de **exportar** e **excluir** dados de um cliente.
 - Chaves de API **revogáveis** individualmente.
+- Transcrições de reunião: retenção de 90 dias, exclusão em cascata com o cliente, e
+  **fora** da exportação do titular (ver a seção de resumo automático acima).
 - Em produção: defina `NODE_ENV=production`, sirva por **HTTPS** (cookies `Secure` + HSTS) e
   faça backup do arquivo `crm.db`.
 
@@ -205,7 +266,18 @@ helmet (CSP + cabeçalhos), rate limiting (geral + anti brute force no login), C
 de sessão, hashing bcrypt, comparação de token em tempo constante, validação de tamanho de payload,
 prepared statements (sem SQL injection) e handler global de erros. Detalhes em [docs/SEGURANCA.md](docs/SEGURANCA.md).
 
+## Testes
+
+```bash
+npm test          # node:test + supertest, banco temporário, extrator de IA falsificado
+```
+
+Cobre regra de domínio, autenticação e CSRF, privacidade (mascaramento, retenção, exportação)
+e as duas paridades exigidas pela constituição: rota Express ↔ `openapi.yaml` e serviço REST ↔
+ferramenta MCP. Nenhum teste chama a API paga.
+
 ## Stack
 
 Node.js + Express · SQLite (`better-sqlite3`) · bcryptjs · helmet · `@modelcontextprotocol/sdk` (servidor MCP) ·
-`@scalar/api-reference` (documentação em `/docs`) · HTML/CSS/JS puro.
+`@anthropic-ai/sdk` (extração de reunião) · `zod` · `@scalar/api-reference` (documentação em `/docs`) ·
+`node:test` + `supertest` · HTML/CSS/JS puro.

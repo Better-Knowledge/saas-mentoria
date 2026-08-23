@@ -309,9 +309,269 @@ function acoesHoje() {
   };
 }
 
+// =================== RESUMO DE REUNIÃO (feature 002) ===================
+// Toda a regra desta feature vive aqui. As rotas REST traduzem HTTP; as ferramentas
+// MCP traduzem JSON-RPC; nenhuma das duas valida nada por conta própria.
+
+const audit = require('./audit');
+const { SchemaConfirmacao } = require('./ia/schema-resumo');
+const extratorReal = require('./ia/extrator');
+
+// Extrator em uso. O real é o padrão; os testes trocam por um dublê determinístico,
+// porque teste que chama a API de verdade é lento, não determinístico e cobra.
+// É uma costura de uma linha, sem framework de mock.
+let extratorAtual = extratorReal;
+function definirExtrator(novo) { extratorAtual = novo || extratorReal; }
+
+const DIAS_RETENCAO_TRANSCRICAO = 90;
+const HORAS_RETENCAO_RASCUNHO = 24;
+
+// Soma dias a uma data ISO sem depender de fuso: aritmética em UTC sobre a data pura.
+function somarDias(dataISO, dias) {
+  const d = new Date(`${dataISO}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+
+function ehDataISO(v) {
+  return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+    && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
+}
+
+// O dono de um rascunho é a CREDENCIAL, não "a pessoa" nem "a máquina": rascunho
+// criado pela chave A não é visível à chave B (FR-025).
+function ehDono(rascunho, principal) {
+  return principal
+    && rascunho.dono_tipo === (principal.tipo === 'ia' ? 'ia' : 'humano')
+    && Number(rascunho.dono_id) === Number(principal.id);
+}
+
+// Busca exigindo posse. Dono diferente responde 404, nunca 403: 403 confirmaria a
+// existência de um rascunho alheio.
+function rascunhoDoDono(id, principal) {
+  const r = db.prepare('SELECT * FROM resumo_rascunhos WHERE id = ?').get(id);
+  if (!r || !ehDono(r, principal)) throw new ErroDominio('Rascunho nao encontrado', 404);
+  return r;
+}
+
+function serializarRascunho(linha) {
+  return {
+    id: linha.id,
+    cliente_id: linha.cliente_id,
+    ...JSON.parse(linha.payload),
+    modelo: linha.modelo,
+    tokens_entrada: linha.tokens_entrada,
+    tokens_saida: linha.tokens_saida,
+    duracao_ms: linha.duracao_ms,
+    created_at: linha.created_at,
+    // A transcrição em revisão volta para a tela, para sobreviver a um reload sem
+    // obrigar a pessoa a colar de novo algo que já custou uma chamada paga.
+    transcricao: linha.transcricao_texto,
+    retencao_dias: DIAS_RETENCAO_TRANSCRICAO,
+  };
+}
+
+// Monta o texto que vai para o histórico a partir do rascunho revisado.
+// É texto puro: quem renderiza escapa (FR-023). Aqui só se decide a forma.
+function textoDaInteracao({ resumo, decisoes, proximos_passos, objecoes }) {
+  const partes = [];
+  if (resumo && resumo.trim()) partes.push(resumo.trim());
+  const bloco = (titulo, itens, formata) => {
+    if (!itens || !itens.length) return;
+    partes.push(`${titulo}:\n${itens.map((i) => `- ${formata(i)}`).join('\n')}`);
+  };
+  bloco('Decisões', decisoes, (i) => i.texto);
+  bloco('Próximos passos', proximos_passos, (i) => {
+    const extras = [i.responsavel, i.prazo].filter(Boolean).join(', ');
+    return extras ? `${i.texto} (${extras})` : i.texto;
+  });
+  bloco('Objeções', objecoes, (i) => i.texto);
+  return partes.join('\n\n');
+}
+
+// ---------- criar rascunho: chama o modelo, NÃO grava no histórico ----------
+async function criarRascunho(clienteId, transcricao, principal, extrator = extratorAtual) {
+  const cliente = db.prepare('SELECT id FROM clientes WHERE id = ?').get(clienteId);
+  if (!cliente) throw new ErroDominio('Cliente nao encontrado', 404);
+
+  const { rascunho, modelo, tokens_entrada, tokens_saida, duracao_ms } =
+    await extrator.extrair(transcricao, { hoje: hojeISO() });
+
+  const info = db.prepare(`
+    INSERT INTO resumo_rascunhos
+      (cliente_id, payload, transcricao_texto, dono_tipo, dono_id, modelo,
+       tokens_entrada, tokens_saida, duracao_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    clienteId, JSON.stringify(rascunho), String(transcricao),
+    principal.tipo === 'ia' ? 'ia' : 'humano', principal.id,
+    modelo, tokens_entrada, tokens_saida, duracao_ms ?? null,
+  );
+  return serializarRascunho(
+    db.prepare('SELECT * FROM resumo_rascunhos WHERE id = ?').get(info.lastInsertRowid)
+  );
+}
+
+function obterRascunho(id, principal) {
+  return serializarRascunho(rascunhoDoDono(id, principal));
+}
+
+function descartarRascunho(id, principal) {
+  const r = rascunhoDoDono(id, principal);
+  db.prepare('DELETE FROM resumo_rascunhos WHERE id = ?').run(r.id);
+  // Nada é gravado no histórico: não houve conteúdo criado, logo não há o que auditar.
+  return { ok: true, descartado: r.id };
+}
+
+// ---------- confirmar: grava o conteúdo REVISADO ----------
+function confirmarRascunho(id, corpoRevisado, principal) {
+  const r = rascunhoDoDono(id, principal);
+
+  const analise = SchemaConfirmacao.safeParse(corpoRevisado || {});
+  if (!analise.success) {
+    const problema = analise.error.issues[0];
+    throw new ErroDominio(
+      `Rascunho invalido: ${problema.path.join('.') || 'corpo'} — ${problema.message}`, 400
+    );
+  }
+  const revisado = analise.data;
+
+  const vazio = !revisado.resumo.trim()
+    && !revisado.decisoes.length && !revisado.proximos_passos.length && !revisado.objecoes.length;
+  if (vazio) {
+    throw new ErroDominio(
+      'Nada a salvar: escreva um resumo ou mantenha ao menos um item antes de confirmar.', 400
+    );
+  }
+
+  const texto = textoDaInteracao(revisado);
+  if (texto.length > 5000) {
+    throw new ErroDominio(
+      `Conteudo muito longo: ${texto.length} caracteres, limite 5000. Remova ou encurte itens.`, 400
+    );
+  }
+
+  // A promoção de próxima ação é validada ANTES de qualquer escrita, para que um 409
+  // ou um 400 não deixe interação gravada sem o efeito que a pessoa pediu.
+  const promover = revisado.promover_proxima_acao || null;
+  let clienteAntes = null;
+  if (promover) {
+    clienteAntes = db.prepare(
+      'SELECT id, proxima_acao, proxima_acao_data FROM clientes WHERE id = ?'
+    ).get(r.cliente_id);
+    if (!clienteAntes) throw new ErroDominio('Cliente nao encontrado', 404);
+    if (!ehDataISO(promover.data)) {
+      throw new ErroDominio('Data da proxima acao invalida: use YYYY-MM-DD', 400);
+    }
+    if (clienteAntes.proxima_acao && !promover.substituir) {
+      const e = new ErroDominio(
+        'Este cliente ja tem uma proxima acao definida. Confirme a substituicao.', 409
+      );
+      e.proxima_acao_vigente = {
+        proxima_acao: clienteAntes.proxima_acao,
+        proxima_acao_data: clienteAntes.proxima_acao_data,
+      };
+      throw e;
+    }
+  }
+
+  // A autoria e a revisão vêm da credencial verificada, nunca do corpo (FR-019).
+  // Confirmação por sessão foi lida por alguém; por chave de API, não foi — e o
+  // registro diz isso, para quem ler a ficha meses depois saber a diferença.
+  const porSessao = principal.credencial === 'sessao';
+  const revisao = porSessao ? 'humana' : 'sem_revisao';
+
+  const gravar = db.transaction(() => {
+    const infoInteracao = db.prepare(`
+      INSERT INTO interacoes
+        (cliente_id, texto, gerado_por_ia, revisao, revisado_por, revisado_em, origem_registro)
+      VALUES (?, ?, 1, ?, ?, datetime('now','localtime'), 'resumo_reuniao')
+    `).run(r.cliente_id, texto, revisao, porSessao ? principal.id : null);
+    const interacaoId = Number(infoInteracao.lastInsertRowid);
+
+    db.prepare(`
+      INSERT INTO transcricoes (interacao_id, cliente_id, texto, expira_em)
+      VALUES (?, ?, ?, ?)
+    `).run(interacaoId, r.cliente_id, r.transcricao_texto,
+      somarDias(hojeISO(), DIAS_RETENCAO_TRANSCRICAO));
+
+    db.prepare("UPDATE clientes SET updated_at = datetime('now','localtime') WHERE id = ?")
+      .run(r.cliente_id);
+
+    // A trilha registra QUE a interação foi criada e por qual credencial — nunca o
+    // conteúdo da reunião (FR-022); o audit.js recusaria o valor de qualquer forma.
+    audit.registrar({
+      entidade: 'interacao', entidade_id: interacaoId, acao: 'criar',
+      campo: 'revisao', valor_anterior: null, valor_novo: revisao, principal,
+    });
+
+    if (promover) {
+      db.prepare(`
+        UPDATE clientes SET proxima_acao = ?, proxima_acao_data = ?,
+          updated_at = datetime('now','localtime') WHERE id = ?
+      `).run(promover.texto, promover.data, r.cliente_id);
+      // Alteração de campo de negócio é atribuída a QUEM CONFIRMOU, não à IA (FR-021).
+      for (const [campo, antes, depois] of [
+        ['proxima_acao', clienteAntes.proxima_acao, promover.texto],
+        ['proxima_acao_data', clienteAntes.proxima_acao_data, promover.data],
+      ]) {
+        audit.registrar({
+          entidade: 'cliente', entidade_id: r.cliente_id, acao: 'atualizar',
+          campo, valor_anterior: antes, valor_novo: depois, principal,
+        });
+      }
+    }
+
+    // O rascunho é consumido: não existe rascunho confirmado.
+    db.prepare('DELETE FROM resumo_rascunhos WHERE id = ?').run(r.id);
+    return interacaoId;
+  });
+
+  const interacaoId = gravar();
+  const interacao = db.prepare('SELECT * FROM interacoes WHERE id = ?').get(interacaoId);
+  const transcricao = db.prepare('SELECT id FROM transcricoes WHERE interacao_id = ?').get(interacaoId);
+  return { ...interacao, transcricao_id: transcricao ? transcricao.id : null };
+}
+
+// ---------- transcrição de origem ----------
+// Expirada NÃO é erro: é o funcionamento correto da retenção. Devolver 404 aqui faria
+// a interface mostrar falha onde houve política cumprida.
+function obterTranscricao(interacaoId) {
+  const interacao = db.prepare('SELECT id FROM interacoes WHERE id = ?').get(interacaoId);
+  if (!interacao) throw new ErroDominio('Interacao nao encontrada', 404);
+  const t = db.prepare('SELECT * FROM transcricoes WHERE interacao_id = ?').get(interacaoId);
+  if (!t) {
+    const jaTeve = db.prepare(
+      "SELECT id FROM interacoes WHERE id = ? AND origem_registro = 'resumo_reuniao'"
+    ).get(interacaoId);
+    if (!jaTeve) throw new ErroDominio('Esta interacao nao tem transcricao de origem', 404);
+    return { disponivel: false, motivo: 'expirada' };
+  }
+  return { disponivel: true, texto: t.texto, expira_em: t.expira_em, created_at: t.created_at };
+}
+
+// ---------- retenção ----------
+// Apaga o que venceu. Chamada no boot, a cada 24 h e pelo script de linha de comando —
+// a mesma função nos três casos, para que o comportamento seja testável sem esperar
+// 90 dias nem mexer no relógio do sistema.
+function purgarExpirados(hoje = hojeISO()) {
+  const transcricoes = db.prepare('DELETE FROM transcricoes WHERE expira_em <= ?').run(hoje);
+  const rascunhos = db.prepare(
+    `DELETE FROM resumo_rascunhos WHERE created_at <= datetime('now','localtime','-${HORAS_RETENCAO_RASCUNHO} hours')`
+  ).run();
+  return { transcricoes: transcricoes.changes, rascunhos: rascunhos.changes };
+}
+
+const resumoReuniao = {
+  criarRascunho, obterRascunho, confirmarRascunho, descartarRascunho,
+  obterTranscricao, purgarExpirados,
+  DIAS_RETENCAO_TRANSCRICAO, textoDaInteracao, definirExtrator,
+};
+
 module.exports = {
   ETAPAS, RESULTADOS, PESO_ETAPA, ErroDominio, montaCliente,
   listarClientes, obterCliente, criarCliente, atualizarCliente, moverEtapa,
   listarInteracoes, registrarInteracao, exportarCliente, excluirCliente, acoesHoje,
   dashboard,
+  resumoReuniao,
 };

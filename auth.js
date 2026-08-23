@@ -197,23 +197,60 @@ function verificarApiKey(chave) {
   return k;
 }
 
+// ---------- resolução de credencial: dois planos, duas funções ----------
+// A separação é deliberada e é uma exigência de segurança, não estilo.
+//
+// Se uma única função resolvesse os dois planos com fallback interno, ela seria
+// insegura no ponto onde é usada por requireBearer: aquele middleware valida apenas
+// o PREFIXO do header antes de chamá-la, então uma requisição com
+// `Authorization: Bearer <lixo>` acompanhada de um cookie de sessão válido cairia no
+// fallback e entraria no endpoint MCP como principal humano — credencial de pessoa
+// operando o plano de máquina, num endpoint que não exige CSRF.
+//
+// Com duas funções, esse vazamento é impossível por construção em vez de depender de
+// a ordem das checagens continuar correta para sempre. tests/resumo-api.test.js fixa
+// a fronteira.
+
+// Plano B (máquinas): SÓ Authorization: Bearer. Nunca olha cookie.
+function resolverBearer(req) {
+  const header = req.headers['authorization'] || '';
+  if (!header.startsWith('Bearer ')) return null;
+  const k = verificarApiKey(header.slice(7));
+  if (!k) return null;
+  return { tipo: 'ia', credencial: 'apikey', id: k.id, nome: k.nome };
+}
+
+// Plano A (pessoas): SÓ o cookie de sessão. Nunca olha header Authorization.
+function resolverSessao(req) {
+  const s = obterSessao(req.cookies && req.cookies[COOKIE_NOME]);
+  if (!s) return null;
+  return { tipo: 'humano', credencial: 'sessao', id: s.usuario_id,
+    nome: s.nome, papel: s.papel, csrf: s.csrf };
+}
+
+// Porta única das rotas /api, onde os dois planos são legítimos. A ordem importa:
+// um Bearer presente é uma declaração explícita de intenção de operar como máquina,
+// e um Bearer inválido NÃO cai para a sessão — devolve null, e a rota responde 401.
+function resolverPrincipal(req) {
+  const header = req.headers['authorization'] || '';
+  if (header.startsWith('Bearer ')) return resolverBearer(req);
+  return resolverSessao(req);
+}
+
 // ---------- middlewares ----------
 // Aceita sessão (pessoa) OU API key (máquina). Sem isso → 401.
 function requireAuth(req, res, next) {
   const header = req.headers['authorization'] || '';
-  if (header.startsWith('Bearer ')) {
-    const k = verificarApiKey(header.slice(7));
-    if (!k) return res.status(401).json({ erro: 'Chave de API inválida ou revogada' });
-    req.principal = { tipo: 'ia', credencial: 'apikey', id: k.id, nome: k.nome };
-    return next();
+  const principal = resolverPrincipal(req);
+  if (!principal) {
+    return res.status(401).json(
+      header.startsWith('Bearer ')
+        ? { erro: 'Chave de API inválida ou revogada' }
+        : { erro: 'Não autenticado' }
+    );
   }
-  const s = obterSessao(req.cookies && req.cookies[COOKIE_NOME]);
-  if (s) {
-    req.principal = { tipo: 'humano', credencial: 'sessao', id: s.usuario_id,
-      nome: s.nome, papel: s.papel, csrf: s.csrf };
-    return next();
-  }
-  return res.status(401).json({ erro: 'Não autenticado' });
+  req.principal = principal;
+  next();
 }
 
 // Para escritas vindas do navegador (sessão), exige o token CSRF no header.
@@ -237,27 +274,21 @@ function requireAdmin(req, res, next) {
 }
 
 // ---------- autenticação do servidor MCP (plano de máquina) ----------
-// Resolução de credencial isolada atrás de uma única função: hoje só valida API keys Bearer;
-// no futuro um validador de tokens OAuth do MCP pode ser plugado aqui sem quebrar as chaves já
-// emitidas — ambos os caminhos produzem o mesmo `principal`.
-function resolverPrincipal(req) {
-  const header = req.headers['authorization'] || '';
-  if (header.startsWith('Bearer ')) {
-    const k = verificarApiKey(header.slice(7));
-    if (k) return { tipo: 'ia', credencial: 'apikey', id: k.id, nome: k.nome };
-  }
-  return null;
-}
-
-// Exige Bearer válido para o endpoint MCP. Sem credencial válida → 401 (nunca anônimo).
+// Exige Bearer válido. Usa resolverBearer — NUNCA resolverPrincipal — para que um
+// cookie de sessão jamais abra o endpoint MCP. Trocar por resolverPrincipal aqui
+// reintroduziria o vazamento de plano descrito acima.
+//
+// O isolamento que o PRD RF-69 pede continua valendo: quando o OAuth do MCP chegar,
+// ele é plugado dentro de resolverBearer, sem invalidar as chaves já emitidas.
 function requireBearer(req, res, next) {
-  const header = req.headers['authorization'] || '';
-  if (!header.startsWith('Bearer ')) {
-    return res.status(401).json({ erro: 'Não autenticado' });
-  }
-  const principal = resolverPrincipal(req);
+  const principal = resolverBearer(req);
   if (!principal) {
-    return res.status(401).json({ erro: 'Chave de API inválida ou revogada' });
+    const header = req.headers['authorization'] || '';
+    return res.status(401).json(
+      header.startsWith('Bearer ')
+        ? { erro: 'Chave de API inválida ou revogada' }
+        : { erro: 'Não autenticado' }
+    );
   }
   req.principal = principal;
   next();
@@ -288,5 +319,5 @@ module.exports = {
   criarSessao, obterSessao, destruirSessao, setCookieSessao, limparCookieSessao,
   criarApiKey, listarApiKeys, revogarApiKey,
   requireAuth, csrfProtect, requireAdmin, bootstrapAdmin,
-  resolverPrincipal, requireBearer,
+  resolverPrincipal, resolverBearer, resolverSessao, requireBearer,
 };

@@ -1,0 +1,11 @@
+{
+  "decisoes": [],
+  "proximos_passos": [
+    { "texto": "Preparar e enviar versão reduzida da proposta, focada em atendimento", "responsavel": "Farley", "prazo": null }
+  ],
+  "objecoes": [
+    { "texto": "Achou o valor caro, acima do esperado" },
+    { "texto": "Prazo de três meses é longo demais, precisa de resultado no trimestre" },
+    { "texto": "O sócio é resistente a consultoria por experiência anterior ruim" }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "decisoes": [
+    { "texto": "Seguir com o diagnóstico completo do time de atendimento" },
+    { "texto": "Orçamento aprovado pela diretoria" }
+  ],
+  "proximos_passos": [
+    { "texto": "Enviar a proposta formal", "responsavel": "Farley", "prazo": null }
+  ],
+  "objecoes": [
+    { "texto": "O jurídico precisa revisar a cláusula de confidencialidade antes da assinatura" }
+  ]
+}
