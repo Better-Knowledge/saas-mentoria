@@ -295,3 +295,11 @@ ferramenta MCP. Nenhum teste chama a API paga.
 Node.js + Express · SQLite (`better-sqlite3`) · bcryptjs · helmet · `@modelcontextprotocol/sdk` (servidor MCP) ·
 `@anthropic-ai/sdk` (extração de reunião) · `zod` · `@scalar/api-reference` (documentação em `/docs`) ·
 `node:test` + `supertest` · HTML/CSS/JS puro.
+
+## Licença
+
+Licenciado sob a **Apache License, Versão 2.0** — texto completo em [LICENSE](LICENSE),
+atribuição em [NOTICE](NOTICE).
+
+Copyright 2026 Fernando Melo Faraco · <fernando.faraco@better-knowledge.com.br>
+Comunidade Profissionais do Futuro (CPDF) · Better Knowledge

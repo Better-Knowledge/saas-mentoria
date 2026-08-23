@@ -2,6 +2,12 @@
   "name": "mini-crm",
   "version": "1.0.0",
   "description": "Mini CRM sob medida para consultoria e solucoes de IA Generativa",
+  "license": "Apache-2.0",
+  "author": "Fernando Melo Faraco <fernando.faraco@better-knowledge.com.br> (Comunidade Profissionais do Futuro (CPDF) · Better Knowledge)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Better-Knowledge/cpdf-crm-mentoria.git"
+  },
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
